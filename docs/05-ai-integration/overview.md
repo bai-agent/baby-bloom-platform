@@ -1,0 +1,14 @@
+# AI Integration Points
+
+## Where AI is Used
+
+1. **Profile Bio Generation**: Converts nanny form data into professional bio
+2. **Facebook Post Generation**: Creates shareable post for nanny to use
+3. **Passport Verification**: Checks if passport photo matches, name matches, not expired
+4. **WWCC Verification**: Checks if WWCC valid, name matches, not expired
+5. **Facebook Screenshot Verification**: Checks if screenshot valid, posted to group
+6. **Interview Email Coordination**: Sends emails to coordinate scheduling
+
+## Provider
+- Anthropic Claude API
+- Admin can review and override all AI decisions
