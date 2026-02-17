@@ -1,0 +1,98 @@
+@import "tailwindcss";
+
+/* ═══════════════════════════════════════════════════
+   Baby Bloom Design System — Purple/Pink Palette
+   ═══════════════════════════════════════════════════ */
+
+:root {
+  /* Primary — Purple */
+  --bb-purple-50: #faf5ff;
+  --bb-purple-100: #f3e8ff;
+  --bb-purple-200: #e9d5ff;
+  --bb-purple-300: #d8b4fe;
+  --bb-purple-400: #c084fc;
+  --bb-purple-500: #a855f7;
+  --bb-purple-600: #9333ea;
+  --bb-purple-700: #7e22ce;
+  --bb-purple-800: #6b21a8;
+  --bb-purple-900: #581c87;
+
+  /* Accent — Pink */
+  --bb-pink-50: #fdf2f8;
+  --bb-pink-100: #fce7f3;
+  --bb-pink-200: #fbcfe8;
+  --bb-pink-300: #f9a8d4;
+  --bb-pink-400: #f472b6;
+  --bb-pink-500: #ec4899;
+  --bb-pink-600: #db2777;
+  --bb-pink-700: #be185d;
+
+  /* Semantic */
+  --bb-bg: #ffffff;
+  --bb-bg-soft: #faf5ff;
+  --bb-bg-muted: #f3e8ff;
+  --bb-text: #1e1b2e;
+  --bb-text-muted: #6b7280;
+  --bb-border: #e9d5ff;
+  --bb-border-muted: #f3e8ff;
+
+  /* Gradient */
+  --bb-gradient: linear-gradient(135deg, #a855f7, #ec4899);
+  --bb-gradient-soft: linear-gradient(135deg, #f3e8ff, #fce7f3);
+
+  /* Radius */
+  --bb-radius-sm: 0.375rem;
+  --bb-radius: 0.5rem;
+  --bb-radius-lg: 0.75rem;
+  --bb-radius-xl: 1rem;
+  --bb-radius-full: 9999px;
+
+  /* Shadows */
+  --bb-shadow-sm: 0 1px 2px 0 rgb(168 85 247 / 0.05);
+  --bb-shadow: 0 1px 3px 0 rgb(168 85 247 / 0.1), 0 1px 2px -1px rgb(168 85 247 / 0.1);
+  --bb-shadow-md: 0 4px 6px -1px rgb(168 85 247 / 0.1), 0 2px 4px -2px rgb(168 85 247 / 0.1);
+  --bb-shadow-lg: 0 10px 15px -3px rgb(168 85 247 / 0.1), 0 4px 6px -4px rgb(168 85 247 / 0.1);
+}
+
+@theme inline {
+  --color-background: var(--bb-bg);
+  --color-foreground: var(--bb-text);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+
+  /* BB Purple scale */
+  --color-bb-purple-50: var(--bb-purple-50);
+  --color-bb-purple-100: var(--bb-purple-100);
+  --color-bb-purple-200: var(--bb-purple-200);
+  --color-bb-purple-300: var(--bb-purple-300);
+  --color-bb-purple-400: var(--bb-purple-400);
+  --color-bb-purple-500: var(--bb-purple-500);
+  --color-bb-purple-600: var(--bb-purple-600);
+  --color-bb-purple-700: var(--bb-purple-700);
+  --color-bb-purple-800: var(--bb-purple-800);
+  --color-bb-purple-900: var(--bb-purple-900);
+
+  /* BB Pink scale */
+  --color-bb-pink-50: var(--bb-pink-50);
+  --color-bb-pink-100: var(--bb-pink-100);
+  --color-bb-pink-200: var(--bb-pink-200);
+  --color-bb-pink-300: var(--bb-pink-300);
+  --color-bb-pink-400: var(--bb-pink-400);
+  --color-bb-pink-500: var(--bb-pink-500);
+  --color-bb-pink-600: var(--bb-pink-600);
+  --color-bb-pink-700: var(--bb-pink-700);
+}
+
+body {
+  background: var(--bb-bg);
+  color: var(--bb-text);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+/* Gradient text utility */
+.bb-gradient-text {
+  background: var(--bb-gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
