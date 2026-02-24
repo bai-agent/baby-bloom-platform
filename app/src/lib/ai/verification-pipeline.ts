@@ -133,10 +133,9 @@ export async function runIdentityPhase(verificationId: string): Promise<void> {
 
       console.log(`[Identity] PASSED — level 2`);
 
-      // Check if WWCC is already doc_verified → trigger cross-check
-      if (claimed.wwcc_status === WWCC_STATUS.DOC_VERIFIED) {
-        await triggerCrossCheck(verificationId);
-      }
+      // Always attempt cross-check — triggerCrossCheck re-reads current DB state,
+      // so it handles the race where WWCC was submitted during identity processing
+      await triggerCrossCheck(verificationId);
       return;
 
     } catch (error) {
@@ -252,10 +251,9 @@ export async function runWWCCDocPhase(verificationId: string): Promise<void> {
 
       console.log(`[WWCC] Doc PASSED`);
 
-      // Check if identity is already verified → trigger cross-check
-      if (claimed.identity_status === IDENTITY_STATUS.VERIFIED) {
-        await triggerCrossCheck(verificationId);
-      }
+      // Always attempt cross-check — triggerCrossCheck re-reads current DB state,
+      // so it handles the race where identity finished during WWCC processing
+      await triggerCrossCheck(verificationId);
       return;
 
     } catch (error) {
@@ -354,7 +352,7 @@ export async function runCrossCheckPhase(verificationId: string): Promise<void> 
 
 // ── Trigger cross-check if both phases are ready ──
 
-async function triggerCrossCheck(verificationId: string): Promise<void> {
+export async function triggerCrossCheck(verificationId: string): Promise<void> {
   const supabase = createAdminClient();
 
   // Re-read current state

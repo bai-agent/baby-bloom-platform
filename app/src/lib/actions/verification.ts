@@ -15,7 +15,7 @@ import {
   type CrossCheckStatus,
   type UserGuidance,
 } from '@/lib/verification';
-import { runCrossCheckPhase } from '@/lib/ai/verification-pipeline';
+import { triggerCrossCheck } from '@/lib/ai/verification-pipeline';
 
 // ── Shared auth helper ──
 
@@ -308,16 +308,11 @@ export async function submitWWCCSection(
     return { success: false, error: 'Failed to save WWCC data' };
   }
 
-  // For grant_email: if identity is already verified, trigger cross-check
-  if (wwccStatus === WWCC_STATUS.DOC_VERIFIED && existing.identity_status === IDENTITY_STATUS.VERIFIED) {
-    // Set cross-check to pending, then run
-    await admin.from('verifications').update({
-      cross_check_status: CROSS_CHECK_STATUS.PENDING,
-      updated_at: new Date().toISOString(),
-    }).eq('id', existing.id);
-
-    // Run cross-check (fire-and-forget in server action context)
-    runCrossCheckPhase(existing.id).catch(err => {
+  // For grant_email: always attempt cross-check (fire-and-forget).
+  // triggerCrossCheck re-reads DB state, so it handles the race where
+  // identity is still processing when WWCC is submitted.
+  if (wwccStatus === WWCC_STATUS.DOC_VERIFIED) {
+    triggerCrossCheck(existing.id).catch(err => {
       console.error('[submitWWCCSection] Cross-check error:', err);
     });
   }
