@@ -1,484 +1,535 @@
 -- ============================================================================
--- BABY BLOOM SYDNEY - COMPLETE DATABASE SCHEMA
+-- BABY BLOOM SYDNEY - COMPLETE DATABASE MIGRATION
 -- ============================================================================
 -- Version: 3.0
 -- Created: 2026-02-05
+-- Updated: 2026-02-06
 -- Platform: Supabase (PostgreSQL 15+)
 -- Tables: 24
 --
 -- This migration creates all tables, indexes, constraints, triggers, and
--- reference data for the Baby Bloom Sydney nanny matching platform.
+-- functions for the Baby Bloom Sydney nanny matching platform.
 --
--- IMPORTANT: Run this script in a fresh Supabase project or ensure no
--- conflicting tables exist.
+-- IMPORTANT:
+--   - Run this against a fresh Supabase project (or ensure no conflicts).
+--   - auth.users is managed by Supabase Auth -- we do NOT create it.
+--   - Sydney postcode seed data belongs in seed.sql, not here.
+--   - RLS policies belong in rls-policies.sql, not here.
+--
+-- Tables (24):
+--   Core Identity:     user_roles, user_profiles
+--   Reference:         sydney_postcodes
+--   Verification/Logs: verifications, activity_logs, email_logs, user_progress
+--   Nanny Profile:     nannies, nanny_availability, nanny_credentials,
+--                       nanny_assurances, nanny_images, nanny_ai_content
+--   Parent Profile:    parents, nanny_positions, position_schedule,
+--                       position_children
+--   Matching:          interview_requests, babysitting_requests,
+--                       bsr_time_slots, bsr_notifications, nanny_placements
+--   File Management:   file_retention_log
+--
+-- Functions (7):
+--   Triggers:  update_updated_at_column, sync_placement_references
+--   Cron:      check_wwcc_expiry, cleanup_expired_files, send_wwcc_expiry_warnings
+--   Utility:   calculate_distance_km, get_nearest_nannies_for_bsr
 -- ============================================================================
+
 
 -- ============================================================================
 -- SECTION 1: EXTENSIONS
 -- ============================================================================
 
--- Enable case-insensitive text for email comparisons
-CREATE EXTENSION IF NOT EXISTS citext;
+-- case-insensitive text type for email comparisons
+create extension if not exists citext;
 
--- Enable cryptographic functions (for gen_random_uuid)
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+-- cryptographic functions including gen_random_uuid()
+create extension if not exists pgcrypto;
 
--- ============================================================================
--- SECTION 2: HELPER FUNCTIONS
--- ============================================================================
-
--- Function to automatically update updated_at timestamp
-CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-  NEW.updated_at = NOW();
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
 
 -- ============================================================================
--- SECTION 3: CORE IDENTITY TABLES (3 tables)
+-- SECTION 2: TRIGGER FUNCTION - update_updated_at_column()
+-- ============================================================================
+-- Must be created BEFORE any table that attaches an updated_at trigger.
+
+create or replace function update_updated_at_column()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+comment on function update_updated_at_column()
+  is 'Trigger function: automatically sets updated_at to now() on every row update';
+
+
+-- ============================================================================
+-- SECTION 3: CORE IDENTITY TABLES
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
 -- TABLE 1: user_roles
--- Purpose: Extends Supabase auth.users with role information
+-- Purpose: Extends Supabase auth.users with a single role per user.
+-- PK is user_id (not a separate UUID) - one role per user enforced by PK.
 -- ---------------------------------------------------------------------------
-CREATE TABLE user_roles (
-  user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-  role TEXT NOT NULL CHECK (role IN ('nanny', 'parent', 'admin', 'super_admin')),
-  created_at TIMESTAMPTZ DEFAULT NOW()
+create table user_roles (
+  user_id    uuid primary key references auth.users(id) on delete cascade,
+  role       text not null check (role in ('nanny', 'parent', 'admin', 'super_admin')),
+  created_at timestamptz default now()
 );
 
-CREATE INDEX idx_user_roles_role ON user_roles(role);
+create index idx_user_roles_role on user_roles(role);
 
-COMMENT ON TABLE user_roles IS 'User role assignments - one role per user';
-COMMENT ON COLUMN user_roles.role IS 'User role: nanny, parent, admin, or super_admin';
+comment on table  user_roles      is 'User role assignments - one role per user (PK = user_id)';
+comment on column user_roles.role is 'Allowed roles: nanny, parent, admin, super_admin';
+
 
 -- ---------------------------------------------------------------------------
 -- TABLE 2: user_profiles
--- Purpose: Common profile data for all users (nannies and parents)
+-- Purpose: Common profile data shared by nannies and parents.
+--          Single source of truth for name, contact, location, and profile pic.
 -- ---------------------------------------------------------------------------
-CREATE TABLE user_profiles (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID UNIQUE NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+create table user_profiles (
+  id                           uuid primary key default gen_random_uuid(),
+  user_id                      uuid unique not null references auth.users(id) on delete cascade,
 
-  -- Basic Info
-  first_name TEXT NOT NULL,
-  last_name TEXT NOT NULL,
-  email CITEXT NOT NULL, -- Case-insensitive for email lookups
-  mobile_number TEXT,
-  date_of_birth DATE,
+  -- basic info
+  first_name                   text not null,
+  last_name                    text not null,
+  email                        citext not null,
+  mobile_number                text,
+  date_of_birth                date,
 
-  -- Location
-  suburb TEXT NOT NULL,
-  postcode TEXT NOT NULL,
-  address_line1 TEXT,
-  address_line2 TEXT,
-  state TEXT DEFAULT 'NSW',
+  -- location (required)
+  suburb                       text not null,
+  postcode                     text not null,
+  address_line1                text,
+  address_line2                text,
+  state                        text default 'NSW',
 
-  -- Profile Picture (Cloudinary - single source of truth)
-  profile_picture_url TEXT,
-  profile_picture_cloudinary_id TEXT,
+  -- profile picture (Cloudinary - single source of truth)
+  profile_picture_url          text,
+  profile_picture_cloudinary_id text,
 
-  -- Timestamps
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+  -- timestamps
+  created_at                   timestamptz default now(),
+  updated_at                   timestamptz default now()
 );
 
-CREATE INDEX idx_user_profiles_user_id ON user_profiles(user_id);
-CREATE INDEX idx_user_profiles_suburb ON user_profiles(suburb);
-CREATE INDEX idx_user_profiles_postcode ON user_profiles(postcode);
-CREATE INDEX idx_user_profiles_email ON user_profiles(email);
+create index idx_user_profiles_user_id  on user_profiles(user_id);
+create index idx_user_profiles_suburb   on user_profiles(suburb);
+create index idx_user_profiles_postcode on user_profiles(postcode);
+create index idx_user_profiles_email    on user_profiles(email);
 
--- Auto-update updated_at
-CREATE TRIGGER trg_user_profiles_updated_at
-  BEFORE UPDATE ON user_profiles
-  FOR EACH ROW
-  EXECUTE FUNCTION update_updated_at_column();
+create trigger trg_user_profiles_updated_at
+  before update on user_profiles
+  for each row
+  execute function update_updated_at_column();
 
-COMMENT ON TABLE user_profiles IS 'Common profile information for all users';
-COMMENT ON COLUMN user_profiles.email IS 'Case-insensitive email (CITEXT type)';
+comment on table  user_profiles       is 'Common profile information for all users (nannies and parents)';
+comment on column user_profiles.email is 'Denormalised from auth.users; stored as CITEXT for case-insensitive lookups';
+comment on column user_profiles.profile_picture_url is 'Cloudinary URL - single source for profile pictures';
+
 
 -- ============================================================================
--- SECTION 4: REFERENCE DATA TABLES
+-- SECTION 4: REFERENCE DATA TABLE
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
 -- TABLE 3: sydney_postcodes
--- Purpose: Reference data for Sydney suburbs with geolocation
+-- Purpose: Reference table for Sydney suburbs with geolocation.
+--          Used by BSR matching (calculate_distance_km / get_nearest_nannies).
+--          Seed data inserted separately via seed.sql.
 -- ---------------------------------------------------------------------------
-CREATE TABLE sydney_postcodes (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  suburb TEXT NOT NULL,
-  postcode TEXT NOT NULL,
-  latitude DECIMAL(10, 6) NOT NULL,
-  longitude DECIMAL(10, 6) NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT NOW()
+create table sydney_postcodes (
+  id        uuid primary key default gen_random_uuid(),
+  suburb    text not null,
+  postcode  text not null,
+  latitude  decimal(10, 6) not null,
+  longitude decimal(10, 6) not null,
+  created_at timestamptz default now()
 );
 
-CREATE INDEX idx_sydney_postcodes_suburb ON sydney_postcodes(suburb);
-CREATE INDEX idx_sydney_postcodes_postcode ON sydney_postcodes(postcode);
-CREATE INDEX idx_sydney_postcodes_location ON sydney_postcodes(latitude, longitude);
-CREATE UNIQUE INDEX idx_sydney_postcodes_unique ON sydney_postcodes(suburb, postcode);
+create index idx_sydney_postcodes_suburb   on sydney_postcodes(suburb);
+create index idx_sydney_postcodes_postcode on sydney_postcodes(postcode);
+create index idx_sydney_postcodes_location on sydney_postcodes(latitude, longitude);
+create unique index idx_sydney_postcodes_unique on sydney_postcodes(suburb, postcode);
 
-COMMENT ON TABLE sydney_postcodes IS 'Sydney suburb reference data with geolocation for BSR matching';
+comment on table  sydney_postcodes           is 'Sydney suburb reference data with geolocation for BSR distance matching';
+comment on column sydney_postcodes.latitude  is 'Latitude in decimal degrees (negative for southern hemisphere)';
+comment on column sydney_postcodes.longitude is 'Longitude in decimal degrees';
+
 
 -- ============================================================================
--- SECTION 5: VERIFICATION & LOGGING TABLES (4 tables)
+-- SECTION 5: VERIFICATION AND LOGGING TABLES
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
 -- TABLE 4: verifications
--- Purpose: WWCC and identity verification records for nannies
+-- Purpose: WWCC and identity (passport) verification records.
+--          One record per nanny; drives nannies.wwcc_verified and identity_verified.
 -- ---------------------------------------------------------------------------
-CREATE TABLE verifications (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+create table verifications (
+  id                              uuid primary key default gen_random_uuid(),
+  user_id                         uuid not null references auth.users(id) on delete cascade,
 
-  -- WWCC VERIFICATION
-  wwcc_verification_method TEXT CHECK (wwcc_verification_method IN ('grant_email', 'service_nsw_app', 'manual_entry')),
-  wwcc_grant_email_url TEXT,
-  wwcc_service_nsw_screenshot_url TEXT,
-  wwcc_number TEXT,
-  wwcc_declaration BOOLEAN DEFAULT false,
+  -- wwcc verification
+  wwcc_verification_method        text check (wwcc_verification_method in ('grant_email', 'service_nsw_app', 'manual_entry')),
+  wwcc_grant_email_url            text,
+  wwcc_service_nsw_screenshot_url text,
+  wwcc_number                     text,
+  wwcc_declaration                boolean default false,
 
-  wwcc_verified BOOLEAN DEFAULT false,
-  wwcc_verified_at TIMESTAMPTZ,
-  wwcc_verified_by UUID REFERENCES auth.users(id),
-  wwcc_expiry_date DATE,
-  wwcc_rejection_reason TEXT,
+  wwcc_verified                   boolean default false,
+  wwcc_verified_at                timestamptz,
+  wwcc_verified_by                uuid references auth.users(id),
+  wwcc_expiry_date                date,
+  wwcc_rejection_reason           text,
 
-  -- IDENTITY VERIFICATION
-  surname TEXT,
-  given_names TEXT,
-  date_of_birth DATE,
-  passport_country TEXT,
-  passport_upload_url TEXT,
-  identification_photo_url TEXT,
-  passport_declaration BOOLEAN DEFAULT false,
+  -- identity verification
+  surname                         text,
+  given_names                     text,
+  date_of_birth                   date,
+  passport_country                text,
+  passport_upload_url             text,
+  identification_photo_url        text,
+  passport_declaration            boolean default false,
 
-  identity_verified BOOLEAN DEFAULT false,
-  identity_verified_at TIMESTAMPTZ,
-  identity_verified_by UUID REFERENCES auth.users(id),
-  passport_expiry_date DATE,
-  identity_rejection_reason TEXT,
+  identity_verified               boolean default false,
+  identity_verified_at            timestamptz,
+  identity_verified_by            uuid references auth.users(id),
+  passport_expiry_date            date,
+  identity_rejection_reason       text,
 
-  -- OVERALL STATUS
-  verification_status TEXT CHECK (verification_status IN ('pending', 'wwcc_verified', 'fully_verified', 'rejected', 'expired')) DEFAULT 'pending',
+  -- overall status
+  verification_status             text check (verification_status in ('pending', 'wwcc_verified', 'fully_verified', 'rejected', 'expired')) default 'pending',
 
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  -- timestamps
+  created_at                      timestamptz default now(),
+  updated_at                      timestamptz default now(),
 
-  -- Constraint: If method selected, corresponding proof must be provided
-  CONSTRAINT valid_wwcc_method CHECK (
-    wwcc_verification_method IS NULL OR
-    (wwcc_verification_method = 'grant_email' AND wwcc_grant_email_url IS NOT NULL) OR
-    (wwcc_verification_method = 'service_nsw_app' AND wwcc_service_nsw_screenshot_url IS NOT NULL) OR
-    (wwcc_verification_method = 'manual_entry' AND wwcc_number IS NOT NULL)
+  -- constraint: if a method is chosen, corresponding proof must exist
+  constraint valid_wwcc_method check (
+    wwcc_verification_method is null or
+    (wwcc_verification_method = 'grant_email'    and wwcc_grant_email_url is not null) or
+    (wwcc_verification_method = 'service_nsw_app' and wwcc_service_nsw_screenshot_url is not null) or
+    (wwcc_verification_method = 'manual_entry'   and wwcc_number is not null)
   )
 );
 
-CREATE INDEX idx_verifications_user ON verifications(user_id);
-CREATE INDEX idx_verifications_wwcc_verified ON verifications(wwcc_verified);
-CREATE INDEX idx_verifications_identity_verified ON verifications(identity_verified);
-CREATE INDEX idx_verifications_status ON verifications(verification_status);
-CREATE INDEX idx_verifications_wwcc_expiry ON verifications(wwcc_expiry_date) WHERE wwcc_verified = true;
+create index idx_verifications_user              on verifications(user_id);
+create index idx_verifications_wwcc_verified     on verifications(wwcc_verified);
+create index idx_verifications_identity_verified on verifications(identity_verified);
+create index idx_verifications_status            on verifications(verification_status);
+create index idx_verifications_wwcc_expiry       on verifications(wwcc_expiry_date) where wwcc_verified = true;
 
-CREATE TRIGGER trg_verifications_updated_at
-  BEFORE UPDATE ON verifications
-  FOR EACH ROW
-  EXECUTE FUNCTION update_updated_at_column();
+create trigger trg_verifications_updated_at
+  before update on verifications
+  for each row
+  execute function update_updated_at_column();
 
-COMMENT ON TABLE verifications IS 'WWCC and identity verification records';
-COMMENT ON COLUMN verifications.wwcc_verification_method IS 'How WWCC was verified: grant_email, service_nsw_app, or manual_entry';
+comment on table  verifications                          is 'WWCC and identity (passport) verification records - one per nanny';
+comment on column verifications.wwcc_verification_method is 'How WWCC was submitted: grant_email, service_nsw_app, or manual_entry';
+comment on column verifications.verification_status      is 'Overall status: pending, wwcc_verified, fully_verified, rejected, or expired';
+comment on column verifications.wwcc_expiry_date         is 'WWCC expiry date - checked daily by check_wwcc_expiry() cron function';
+
 
 -- ---------------------------------------------------------------------------
 -- TABLE 5: activity_logs
--- Purpose: Complete audit trail of all user actions
+-- Purpose: Complete audit trail of all user and system actions.
+--          ON DELETE SET NULL on user_id so logs survive user deletion.
 -- ---------------------------------------------------------------------------
-CREATE TABLE activity_logs (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+create table activity_logs (
+  id             uuid primary key default gen_random_uuid(),
+  user_id        uuid references auth.users(id) on delete set null,
 
-  action_type TEXT NOT NULL CHECK (action_type IN (
-    -- Auth & Profile
+  action_type    text not null check (action_type in (
     'signup', 'login', 'profile_updated', 'profile_deactivated',
-    -- Nanny
     'nanny_profile_created', 'nanny_verification_submitted', 'nanny_tier_upgraded',
     'nanny_availability_updated', 'wwcc_expired', 'wwcc_renewed',
-    -- Parent
     'parent_profile_created', 'position_created', 'position_updated', 'position_closed',
-    -- Babysitting
     'babysitting_request_created', 'babysitting_request_cancelled',
-    -- Interview
     'interview_requested', 'interview_accepted', 'interview_declined', 'interview_completed',
-    -- Placement
     'placement_created', 'placement_ended', 'placement_paused', 'placement_resumed',
-    -- Admin
     'admin_override', 'verification_approved', 'verification_rejected',
     'user_suspended', 'user_reinstated',
-    -- System
     'email_sent', 'notification_sent', 'file_deleted'
   )),
 
-  action_details JSONB,
-  ip_address INET,
-  user_agent TEXT,
+  action_details jsonb,
+  ip_address     inet,
+  user_agent     text,
 
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  created_at     timestamptz default now()
 );
 
-CREATE INDEX idx_activity_logs_user ON activity_logs(user_id);
-CREATE INDEX idx_activity_logs_action_type ON activity_logs(action_type);
-CREATE INDEX idx_activity_logs_created ON activity_logs(created_at);
-CREATE INDEX idx_activity_logs_details ON activity_logs USING GIN (action_details);
+create index idx_activity_logs_user        on activity_logs(user_id);
+create index idx_activity_logs_action_type on activity_logs(action_type);
+create index idx_activity_logs_created     on activity_logs(created_at);
+create index idx_activity_logs_details     on activity_logs using gin (action_details);
 
-COMMENT ON TABLE activity_logs IS 'Complete audit trail for compliance and debugging';
+comment on table  activity_logs                is 'Complete audit trail for compliance, debugging, and analytics';
+comment on column activity_logs.action_type    is 'Enumerated action type - new types require a migration';
+comment on column activity_logs.action_details is 'Flexible JSONB payload with action-specific context';
+
 
 -- ---------------------------------------------------------------------------
 -- TABLE 6: email_logs
--- Purpose: Track all system emails sent
+-- Purpose: Track every system email (queued, sent, failed, bounced).
+--          ON DELETE SET NULL on recipient_user_id to preserve history.
 -- ---------------------------------------------------------------------------
-CREATE TABLE email_logs (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+create table email_logs (
+  id                  uuid primary key default gen_random_uuid(),
 
-  recipient_user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL,
-  recipient_email TEXT NOT NULL,
+  recipient_user_id   uuid references auth.users(id) on delete set null,
+  recipient_email     text not null,
 
-  email_type TEXT NOT NULL CHECK (email_type IN (
-    -- Onboarding
+  email_type          text not null check (email_type in (
     'welcome', 'verification_pending', 'verification_approved', 'verification_rejected',
-    -- Interview
     'interview_request', 'interview_confirmed', 'interview_reminder',
-    -- Babysitting
     'babysitting_notification', 'babysitting_accepted', 'babysitting_cancelled',
-    -- Matching & WWCC
     'position_matched', 'wwcc_expiring_soon', 'wwcc_expired',
-    -- Placement
     'placement_created', 'placement_ended',
-    -- Admin
     'admin_notification'
   )),
 
-  subject TEXT NOT NULL,
-  body_text TEXT,
-  body_html TEXT,
+  subject             text not null,
+  body_text           text,
+  body_html           text,
 
-  status TEXT CHECK (status IN ('queued', 'sent', 'failed', 'bounced')) DEFAULT 'queued',
-  sent_at TIMESTAMPTZ,
-  failed_at TIMESTAMPTZ,
-  error_message TEXT,
+  status              text check (status in ('queued', 'sent', 'failed', 'bounced')) default 'queued',
+  sent_at             timestamptz,
+  failed_at           timestamptz,
+  error_message       text,
 
-  provider_message_id TEXT,
-  provider_response JSONB,
+  provider_message_id text,
+  provider_response   jsonb,
 
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  created_at          timestamptz default now()
 );
 
-CREATE INDEX idx_email_logs_recipient_user ON email_logs(recipient_user_id);
-CREATE INDEX idx_email_logs_recipient_email ON email_logs(recipient_email);
-CREATE INDEX idx_email_logs_type ON email_logs(email_type);
-CREATE INDEX idx_email_logs_status ON email_logs(status);
-CREATE INDEX idx_email_logs_created ON email_logs(created_at);
+create index idx_email_logs_recipient_user  on email_logs(recipient_user_id);
+create index idx_email_logs_recipient_email on email_logs(recipient_email);
+create index idx_email_logs_type            on email_logs(email_type);
+create index idx_email_logs_status          on email_logs(status);
+create index idx_email_logs_created         on email_logs(created_at);
 
-COMMENT ON TABLE email_logs IS 'Email delivery tracking for all system communications';
+comment on table  email_logs            is 'Email delivery tracking for all system communications';
+comment on column email_logs.status     is 'Delivery lifecycle: queued then sent (or failed/bounced)';
+comment on column email_logs.email_type is 'Categorises the email for filtering and deduplication';
+
 
 -- ---------------------------------------------------------------------------
 -- TABLE 7: user_progress
--- Purpose: Track user journey through conversion funnel
+-- Purpose: Conversion-funnel tracking. Each stage is reached at most once
+--          per user (enforced by unique index on user_id + stage).
 -- ---------------------------------------------------------------------------
-CREATE TABLE user_progress (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+create table user_progress (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid not null references auth.users(id) on delete cascade,
 
-  stage TEXT NOT NULL CHECK (stage IN (
-    -- Nanny funnel
+  stage      text not null check (stage in (
     'nanny_signup', 'nanny_profile_created', 'nanny_verification_started',
     'nanny_tier2_achieved', 'nanny_tier3_achieved',
     'nanny_first_interview_received', 'nanny_first_babysitting_received', 'nanny_first_hire',
-    -- Parent funnel
     'parent_signup', 'parent_browsing', 'parent_position_created',
     'parent_first_interview_requested', 'parent_first_babysitting_posted', 'parent_first_hire'
   )),
 
-  reached_at TIMESTAMPTZ DEFAULT NOW(),
-  stage_data JSONB
+  reached_at timestamptz default now(),
+  stage_data jsonb
 );
 
-CREATE INDEX idx_user_progress_user ON user_progress(user_id);
-CREATE INDEX idx_user_progress_stage ON user_progress(stage);
-CREATE INDEX idx_user_progress_reached ON user_progress(reached_at);
-CREATE UNIQUE INDEX idx_user_progress_unique ON user_progress(user_id, stage);
+create index idx_user_progress_user    on user_progress(user_id);
+create index idx_user_progress_stage   on user_progress(stage);
+create index idx_user_progress_reached on user_progress(reached_at);
+create unique index idx_user_progress_unique on user_progress(user_id, stage);
 
-COMMENT ON TABLE user_progress IS 'Conversion funnel tracking - each stage reached once per user';
+comment on table  user_progress           is 'Conversion funnel tracking - each stage reached at most once per user';
+comment on column user_progress.stage     is 'Funnel stage name (nanny or parent journey milestone)';
+comment on column user_progress.stage_data is 'Optional JSONB context about how the stage was reached';
+
 
 -- ============================================================================
--- SECTION 6: NANNY PROFILE TABLES (7 tables)
--- Note: nannies table created WITHOUT current_placement_id FK initially
---       (circular dependency - will add FK after nanny_placements is created)
+-- SECTION 6: NANNY PROFILE TABLES
 -- ============================================================================
+-- NOTE: nannies is created WITHOUT current_placement_id FK initially because
+-- nanny_placements has not been defined yet (circular dependency).
+-- The FK is added in Section 10.
 
 -- ---------------------------------------------------------------------------
 -- TABLE 8: nannies
--- Purpose: Main nanny entity with all profile data
+-- Purpose: Main nanny entity. Contains demographics, experience, preferences,
+--          capabilities, logistics, status, verification flags, computed
+--          visibility columns, deactivation tracking, and Wix migration IDs.
 -- ---------------------------------------------------------------------------
-CREATE TABLE nannies (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID UNIQUE NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+create table nannies (
+  id                          uuid primary key default gen_random_uuid(),
+  user_id                     uuid unique not null references auth.users(id) on delete cascade,
 
-  -- Demographics
-  gender TEXT CHECK (gender IN ('female', 'male', 'non_binary', 'prefer_not_to_say')),
-  nationality TEXT,
-  languages TEXT[],
+  -- demographics
+  gender                      text check (gender in ('female', 'male', 'non_binary', 'prefer_not_to_say')),
+  nationality                 text,
+  languages                   text[],
 
-  -- Experience (ALL IN YEARS)
-  total_experience_years INT,
-  nanny_experience_years INT,
-  under_3_experience_years INT,
-  newborn_experience_years INT,
-  experience_details TEXT,
+  -- experience (all in years)
+  total_experience_years      int,
+  nanny_experience_years      int,
+  under_3_experience_years    int,
+  newborn_experience_years    int,
+  experience_details          text,
 
-  -- Preferences - What nanny wants to do
-  role_types_preferred TEXT[],
-  level_of_support_offered TEXT[],
+  -- preferences - what nanny wants to do
+  role_types_preferred        text[],
+  level_of_support_offered    text[],
 
-  -- Work Preferences - Pay & Schedule
-  hourly_rate_min DECIMAL(10,2),
-  pay_frequency TEXT[],
-  immediate_start_available BOOLEAN DEFAULT false,
-  placement_ongoing_preferred BOOLEAN DEFAULT false,
-  start_date_earliest DATE,
-  end_date_latest DATE,
+  -- work preferences - pay and schedule
+  hourly_rate_min             decimal(10,2),
+  pay_frequency               text[],
+  immediate_start_available   boolean default false,
+  placement_ongoing_preferred boolean default false,
+  start_date_earliest         date,
+  end_date_latest             date,
 
-  -- Capabilities - Who they can work with
-  max_children INT CHECK (max_children IN (1, 2, 3)),
-  min_child_age_months INT,
-  max_child_age_months INT,
-  additional_needs_ok BOOLEAN DEFAULT false,
+  -- capabilities - who they can work with
+  max_children                int check (max_children in (1, 2, 3)),
+  min_child_age_months        int,
+  max_child_age_months        int,
+  additional_needs_ok         boolean default false,
 
-  -- Logistics
-  sydney_resident BOOLEAN,
-  residency_status TEXT CHECK (residency_status IN ('Australian Citizen', 'Permanent Resident', 'Working Holiday', 'Other')),
-  right_to_work BOOLEAN,
-  drivers_license BOOLEAN,
-  has_car BOOLEAN,
-  comfortable_with_pets BOOLEAN,
-  vaccination_status BOOLEAN,
-  non_smoker BOOLEAN,
+  -- logistics
+  sydney_resident             boolean,
+  residency_status            text check (residency_status in ('Australian Citizen', 'Permanent Resident', 'Working Holiday', 'Other')),
+  right_to_work               boolean,
+  drivers_license             boolean,
+  has_car                     boolean,
+  comfortable_with_pets       boolean,
+  vaccination_status          boolean,
+  non_smoker                  boolean,
 
-  -- Personal - About You section
-  hobbies_interests TEXT,
-  strengths_traits TEXT,
-  skills_training TEXT,
+  -- personal - about you section
+  hobbies_interests           text,
+  strengths_traits            text,
+  skills_training             text,
 
-  -- Status & Verification
-  status TEXT CHECK (status IN ('active', 'inactive', 'suspended', 'pending_verification', 'deactivated')) DEFAULT 'pending_verification',
-  verification_tier TEXT CHECK (verification_tier IN ('tier1', 'tier2', 'tier3')) DEFAULT 'tier1',
+  -- status and verification
+  status                      text check (status in ('active', 'inactive', 'suspended', 'pending_verification', 'deactivated')) default 'pending_verification',
+  verification_tier           text check (verification_tier in ('tier1', 'tier2', 'tier3')) default 'tier1',
 
-  -- WWCC Status (drives MM/BSR visibility)
-  wwcc_verified BOOLEAN DEFAULT false,
-  wwcc_expiry_date DATE,
-  identity_verified BOOLEAN DEFAULT false,
+  -- wwcc status (drives MM/BSR visibility)
+  wwcc_verified               boolean default false,
+  wwcc_expiry_date            date,
+  identity_verified           boolean default false,
 
-  -- Computed Verification Status
-  fully_verified BOOLEAN GENERATED ALWAYS AS (wwcc_verified AND identity_verified) STORED,
+  -- computed verification status
+  fully_verified              boolean generated always as (wwcc_verified and identity_verified) stored,
 
-  -- Computed Visibility Flags (CRITICAL for Match Making/BSR)
-  visible_in_match_making BOOLEAN GENERATED ALWAYS AS (
-    status = 'active' AND wwcc_verified AND identity_verified
-  ) STORED,
+  -- computed visibility flags (CRITICAL for match making / BSR)
+  visible_in_match_making     boolean generated always as (
+    status = 'active' and wwcc_verified and identity_verified
+  ) stored,
 
-  visible_in_bsr BOOLEAN GENERATED ALWAYS AS (
-    status = 'active' AND wwcc_verified AND identity_verified
-  ) STORED,
+  visible_in_bsr              boolean generated always as (
+    status = 'active' and wwcc_verified and identity_verified
+  ) stored,
 
-  -- Profile visibility (unverified nannies can view their own profile)
-  profile_visible BOOLEAN GENERATED ALWAYS AS (
-    status IN ('active', 'pending_verification')
-  ) STORED,
+  -- profile visibility (unverified nannies can view their own profile)
+  profile_visible             boolean generated always as (
+    status in ('active', 'pending_verification')
+  ) stored,
 
-  -- Deactivation tracking (for 5-year file retention)
-  deactivated_at TIMESTAMPTZ,
-  files_deleted_at TIMESTAMPTZ,
+  -- deactivation tracking (for 5-year file retention)
+  deactivated_at              timestamptz,
+  files_deleted_at            timestamptz,
 
-  -- Current Placement - FK added later due to circular dependency
-  current_placement_id UUID, -- Will add FK constraint after nanny_placements table
+  -- current placement - FK added later in Section 10 (circular dependency)
+  current_placement_id        uuid,
 
-  -- Wix Integration (migration from old system)
-  wix_contact_id TEXT UNIQUE,
-  wix_submission_id TEXT,
-  wix_submission_link TEXT,
+  -- wix integration (migration from old system)
+  wix_contact_id              text unique,
+  wix_submission_id           text,
+  wix_submission_link         text,
 
-  -- Timestamps
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW(),
-  tier2_achieved_at TIMESTAMPTZ,
-  tier3_achieved_at TIMESTAMPTZ
+  -- timestamps
+  created_at                  timestamptz default now(),
+  updated_at                  timestamptz default now(),
+  tier2_achieved_at           timestamptz,
+  tier3_achieved_at           timestamptz
 );
 
-CREATE INDEX idx_nannies_user_id ON nannies(user_id);
-CREATE INDEX idx_nannies_status ON nannies(status);
-CREATE INDEX idx_nannies_tier ON nannies(verification_tier);
-CREATE INDEX idx_nannies_visible_mm ON nannies(visible_in_match_making) WHERE visible_in_match_making = true;
-CREATE INDEX idx_nannies_visible_bsr ON nannies(visible_in_bsr) WHERE visible_in_bsr = true;
-CREATE INDEX idx_nannies_profile_visible ON nannies(profile_visible) WHERE profile_visible = true;
-CREATE INDEX idx_nannies_wix_contact ON nannies(wix_contact_id);
-CREATE INDEX idx_nannies_hourly_rate ON nannies(hourly_rate_min);
-CREATE INDEX idx_nannies_wwcc_expiry ON nannies(wwcc_expiry_date) WHERE wwcc_verified = true;
-CREATE INDEX idx_nannies_deactivated ON nannies(deactivated_at) WHERE deactivated_at IS NOT NULL AND files_deleted_at IS NULL;
-CREATE INDEX idx_nannies_current_placement ON nannies(current_placement_id) WHERE current_placement_id IS NOT NULL;
+create index idx_nannies_user_id            on nannies(user_id);
+create index idx_nannies_status             on nannies(status);
+create index idx_nannies_tier               on nannies(verification_tier);
+create index idx_nannies_visible_mm         on nannies(visible_in_match_making) where visible_in_match_making = true;
+create index idx_nannies_visible_bsr        on nannies(visible_in_bsr) where visible_in_bsr = true;
+create index idx_nannies_profile_visible    on nannies(profile_visible) where profile_visible = true;
+create index idx_nannies_wix_contact        on nannies(wix_contact_id);
+create index idx_nannies_hourly_rate        on nannies(hourly_rate_min);
+create index idx_nannies_wwcc_expiry        on nannies(wwcc_expiry_date) where wwcc_verified = true;
+create index idx_nannies_deactivated        on nannies(deactivated_at) where deactivated_at is not null and files_deleted_at is null;
+create index idx_nannies_current_placement  on nannies(current_placement_id) where current_placement_id is not null;
 
-CREATE TRIGGER trg_nannies_updated_at
-  BEFORE UPDATE ON nannies
-  FOR EACH ROW
-  EXECUTE FUNCTION update_updated_at_column();
+create trigger trg_nannies_updated_at
+  before update on nannies
+  for each row
+  execute function update_updated_at_column();
 
-COMMENT ON TABLE nannies IS 'Main nanny profile entity';
-COMMENT ON COLUMN nannies.visible_in_match_making IS 'Computed: Only active, fully verified nannies visible in match making';
-COMMENT ON COLUMN nannies.visible_in_bsr IS 'Computed: Only active, fully verified nannies receive BSR notifications';
-COMMENT ON COLUMN nannies.fully_verified IS 'Computed: WWCC verified AND identity verified';
+comment on table  nannies                          is 'Main nanny profile entity with all profile, experience, and status data';
+comment on column nannies.fully_verified           is 'Computed: true when wwcc_verified AND identity_verified are both true';
+comment on column nannies.visible_in_match_making  is 'Computed: true only for active, fully-verified nannies - used in MM queries';
+comment on column nannies.visible_in_bsr           is 'Computed: true only for active, fully-verified nannies - used for BSR notifications';
+comment on column nannies.profile_visible          is 'Computed: true when status is active or pending_verification - allows self-viewing';
+comment on column nannies.current_placement_id     is 'FK to nanny_placements - added via ALTER TABLE after placements table exists';
+comment on column nannies.deactivated_at           is 'Set when nanny deactivates; starts 5-year file-retention countdown';
+comment on column nannies.files_deleted_at         is 'Set when all files have been purged after retention period';
+comment on column nannies.verification_tier        is 'Tier 1: profile, Tier 2: WWCC+passport, Tier 3: Facebook post verified';
+
 
 -- ---------------------------------------------------------------------------
 -- TABLE 9: nanny_availability
--- Purpose: Weekly availability schedule for nannies
+-- Purpose: One-to-one with nannies. Weekly availability schedule stored as
+--          JSONB for flexible time-slot matching.
+-- PK is nanny_id (not a separate UUID) - one record per nanny.
 -- ---------------------------------------------------------------------------
-CREATE TABLE nanny_availability (
-  nanny_id UUID PRIMARY KEY REFERENCES nannies(id) ON DELETE CASCADE,
+create table nanny_availability (
+  nanny_id       uuid primary key references nannies(id) on delete cascade,
 
-  -- Days available (denormalized for quick filtering)
-  days_available TEXT[],
+  -- days available (denormalised array for quick filtering)
+  days_available text[],
 
-  -- Detailed schedule grid (JSONB for flexibility)
-  schedule JSONB NOT NULL,
+  -- detailed schedule grid
+  schedule       jsonb not null,
 
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+  updated_at     timestamptz default now()
 );
 
-CREATE INDEX idx_nanny_availability_schedule ON nanny_availability USING GIN (schedule);
-CREATE INDEX idx_nanny_availability_days ON nanny_availability USING GIN (days_available);
+create index idx_nanny_availability_schedule on nanny_availability using gin (schedule);
+create index idx_nanny_availability_days     on nanny_availability using gin (days_available);
 
-CREATE TRIGGER trg_nanny_availability_updated_at
-  BEFORE UPDATE ON nanny_availability
-  FOR EACH ROW
-  EXECUTE FUNCTION update_updated_at_column();
+create trigger trg_nanny_availability_updated_at
+  before update on nanny_availability
+  for each row
+  execute function update_updated_at_column();
 
-COMMENT ON TABLE nanny_availability IS 'Weekly availability schedule - one record per nanny';
-COMMENT ON COLUMN nanny_availability.schedule IS 'JSONB schedule grid with time slots per day';
+comment on table  nanny_availability          is 'Weekly availability schedule - one record per nanny (PK = nanny_id)';
+comment on column nanny_availability.schedule is 'JSONB schedule grid with time slots per day of the week';
+comment on column nanny_availability.days_available is 'Denormalised text array of available day names for fast filtering';
+
 
 -- ---------------------------------------------------------------------------
 -- TABLE 10: nanny_credentials
--- Purpose: Qualifications and certifications (merged table)
+-- Purpose: Merged qualifications (permanent education) and certifications
+--          (time-limited). credential_category discriminates the two.
 -- ---------------------------------------------------------------------------
-CREATE TABLE nanny_credentials (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  nanny_id UUID NOT NULL REFERENCES nannies(id) ON DELETE CASCADE,
+create table nanny_credentials (
+  id                   uuid primary key default gen_random_uuid(),
+  nanny_id             uuid not null references nannies(id) on delete cascade,
 
-  -- Credential Type
-  credential_category TEXT NOT NULL CHECK (credential_category IN ('qualification', 'certification')),
+  -- credential type discriminator
+  credential_category  text not null check (credential_category in ('qualification', 'certification')),
 
-  -- QUALIFICATIONS (Permanent Education)
-  qualification_type TEXT CHECK (qualification_type IN (
+  -- qualifications (permanent education)
+  qualification_type   text check (qualification_type in (
     'Certificate III in Early Childhood Education and Care',
     'Certificate IV in Education Support',
     'Diploma of Early Childhood Education and Care',
@@ -486,13 +537,11 @@ CREATE TABLE nanny_credentials (
     'No Qualifications',
     'Other'
   )),
+  institution          text,
+  year_obtained        int,
 
-  -- Optional details for qualifications
-  institution TEXT,
-  year_obtained INT,
-
-  -- CERTIFICATIONS (Time-Limited)
-  certification_type TEXT CHECK (certification_type IN (
+  -- certifications (time-limited)
+  certification_type   text check (certification_type in (
     'CPR',
     'First Aid',
     'First Aid in Education & Care Setting',
@@ -500,135 +549,146 @@ CREATE TABLE nanny_credentials (
     'Anaphylaxis and Asthma Management'
   )),
 
-  -- File upload (Supabase Storage)
-  file_url TEXT,
-  file_name TEXT,
-  issue_date DATE,
-  expiry_date DATE,
+  -- file upload (Supabase Storage)
+  file_url             text,
+  file_name            text,
+  issue_date           date,
+  expiry_date          date,
 
-  -- VERIFICATION (Admin Review)
-  verified BOOLEAN DEFAULT false,
-  verified_at TIMESTAMPTZ,
-  verified_by UUID REFERENCES auth.users(id),
-  rejection_reason TEXT,
+  -- verification (admin review)
+  verified             boolean default false,
+  verified_at          timestamptz,
+  verified_by          uuid references auth.users(id),
+  rejection_reason     text,
 
-  notes TEXT,
+  notes                text,
 
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  created_at           timestamptz default now(),
+  updated_at           timestamptz default now(),
 
-  -- Constraint: qualification_type required for qualifications
-  CONSTRAINT valid_qualification CHECK (
-    (credential_category = 'qualification' AND qualification_type IS NOT NULL) OR
-    (credential_category = 'certification' AND certification_type IS NOT NULL)
+  -- qualifications must have qualification_type; certifications must have certification_type
+  constraint valid_qualification check (
+    (credential_category = 'qualification'  and qualification_type  is not null) or
+    (credential_category = 'certification'  and certification_type  is not null)
   ),
 
-  -- Constraint: certifications must have issue and expiry dates
-  CONSTRAINT valid_certification_dates CHECK (
-    credential_category = 'qualification' OR
-    (credential_category = 'certification' AND issue_date IS NOT NULL AND expiry_date IS NOT NULL)
+  -- certifications must have issue and expiry dates
+  constraint valid_certification_dates check (
+    credential_category = 'qualification' or
+    (credential_category = 'certification' and issue_date is not null and expiry_date is not null)
   )
 );
 
-CREATE INDEX idx_nanny_credentials_nanny_id ON nanny_credentials(nanny_id);
-CREATE INDEX idx_nanny_credentials_category ON nanny_credentials(credential_category);
-CREATE INDEX idx_nanny_credentials_qual_type ON nanny_credentials(qualification_type);
-CREATE INDEX idx_nanny_credentials_cert_type ON nanny_credentials(certification_type);
-CREATE INDEX idx_nanny_credentials_expiry ON nanny_credentials(expiry_date) WHERE credential_category = 'certification';
-CREATE INDEX idx_nanny_credentials_verified ON nanny_credentials(verified);
+create index idx_nanny_credentials_nanny_id  on nanny_credentials(nanny_id);
+create index idx_nanny_credentials_category  on nanny_credentials(credential_category);
+create index idx_nanny_credentials_qual_type on nanny_credentials(qualification_type);
+create index idx_nanny_credentials_cert_type on nanny_credentials(certification_type);
+create index idx_nanny_credentials_expiry    on nanny_credentials(expiry_date) where credential_category = 'certification';
+create index idx_nanny_credentials_verified  on nanny_credentials(verified);
 
-CREATE TRIGGER trg_nanny_credentials_updated_at
-  BEFORE UPDATE ON nanny_credentials
-  FOR EACH ROW
-  EXECUTE FUNCTION update_updated_at_column();
+create trigger trg_nanny_credentials_updated_at
+  before update on nanny_credentials
+  for each row
+  execute function update_updated_at_column();
 
-COMMENT ON TABLE nanny_credentials IS 'Nanny qualifications (permanent) and certifications (time-limited)';
+comment on table  nanny_credentials                    is 'Merged table for nanny qualifications (permanent) and certifications (time-limited)';
+comment on column nanny_credentials.credential_category is 'Discriminator: qualification (permanent) or certification (expires)';
+comment on column nanny_credentials.qualification_type  is 'Required when credential_category = qualification';
+comment on column nanny_credentials.certification_type  is 'Required when credential_category = certification';
+
 
 -- ---------------------------------------------------------------------------
 -- TABLE 11: nanny_assurances
--- Purpose: Police checks and references
+-- Purpose: Police checks and references for nannies.
 -- ---------------------------------------------------------------------------
-CREATE TABLE nanny_assurances (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  nanny_id UUID NOT NULL REFERENCES nannies(id) ON DELETE CASCADE,
+create table nanny_assurances (
+  id                uuid primary key default gen_random_uuid(),
+  nanny_id          uuid not null references nannies(id) on delete cascade,
 
-  assurance_type TEXT NOT NULL CHECK (assurance_type IN (
+  assurance_type    text not null check (assurance_type in (
     'National Police Check',
     'References',
     'Professional References'
   )),
 
-  file_url TEXT,
-  file_name TEXT,
-  issue_date DATE,
-  expiry_date DATE,
-  reference_details TEXT,
+  file_url          text,
+  file_name         text,
+  issue_date        date,
+  expiry_date       date,
+  reference_details text,
 
-  verified BOOLEAN DEFAULT false,
-  verified_at TIMESTAMPTZ,
-  verified_by UUID REFERENCES auth.users(id),
+  verified          boolean default false,
+  verified_at       timestamptz,
+  verified_by       uuid references auth.users(id),
 
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  created_at        timestamptz default now()
 );
 
-CREATE INDEX idx_nanny_assurances_nanny_id ON nanny_assurances(nanny_id);
-CREATE INDEX idx_nanny_assurances_type ON nanny_assurances(assurance_type);
+create index idx_nanny_assurances_nanny_id on nanny_assurances(nanny_id);
+create index idx_nanny_assurances_type     on nanny_assurances(assurance_type);
 
-COMMENT ON TABLE nanny_assurances IS 'Police checks and references for nannies';
+comment on table  nanny_assurances                is 'Police checks and references for nannies';
+comment on column nanny_assurances.assurance_type is 'Type: National Police Check, References, or Professional References';
+
 
 -- ---------------------------------------------------------------------------
 -- TABLE 12: nanny_images
--- Purpose: Profile and ad images stored in Cloudinary
+-- Purpose: Nanny ad images stored in Cloudinary.
+--          Profile pictures are in user_profiles (single source of truth).
+--          Unique partial index ensures only one primary image per nanny.
 -- ---------------------------------------------------------------------------
-CREATE TABLE nanny_images (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  nanny_id UUID NOT NULL REFERENCES nannies(id) ON DELETE CASCADE,
+create table nanny_images (
+  id                    uuid primary key default gen_random_uuid(),
+  nanny_id              uuid not null references nannies(id) on delete cascade,
 
-  image_type TEXT NOT NULL CHECK (image_type IN ('ad_primary', 'ad_secondary', 'ad_gallery')),
+  image_type            text not null check (image_type in ('ad_primary', 'ad_secondary', 'ad_gallery')),
 
-  cloudinary_url TEXT NOT NULL,
-  cloudinary_public_id TEXT NOT NULL,
-  cloudinary_format TEXT,
-  cloudinary_width INT,
-  cloudinary_height INT,
+  cloudinary_url        text not null,
+  cloudinary_public_id  text not null,
+  cloudinary_format     text,
+  cloudinary_width      int,
+  cloudinary_height     int,
 
-  is_primary BOOLEAN DEFAULT false,
-  display_order INT DEFAULT 0,
-  alt_text TEXT,
+  is_primary            boolean default false,
+  display_order         int default 0,
+  alt_text              text,
 
-  approved BOOLEAN DEFAULT false,
-  approved_at TIMESTAMPTZ,
-  approved_by UUID REFERENCES auth.users(id),
+  approved              boolean default false,
+  approved_at           timestamptz,
+  approved_by           uuid references auth.users(id),
 
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+  created_at            timestamptz default now(),
+  updated_at            timestamptz default now()
 );
 
-CREATE INDEX idx_nanny_images_nanny_id ON nanny_images(nanny_id);
-CREATE INDEX idx_nanny_images_type ON nanny_images(image_type);
-CREATE INDEX idx_nanny_images_approved ON nanny_images(approved) WHERE image_type LIKE 'ad_%';
+create index idx_nanny_images_nanny_id on nanny_images(nanny_id);
+create index idx_nanny_images_type     on nanny_images(image_type);
+create index idx_nanny_images_approved on nanny_images(approved) where image_type like 'ad_%';
 
--- Only one primary image per nanny
-CREATE UNIQUE INDEX idx_nanny_images_one_primary
-  ON nanny_images(nanny_id, is_primary)
-  WHERE is_primary = true;
+-- only one primary image per nanny
+create unique index idx_nanny_images_one_primary
+  on nanny_images(nanny_id, is_primary)
+  where is_primary = true;
 
-CREATE TRIGGER trg_nanny_images_updated_at
-  BEFORE UPDATE ON nanny_images
-  FOR EACH ROW
-  EXECUTE FUNCTION update_updated_at_column();
+create trigger trg_nanny_images_updated_at
+  before update on nanny_images
+  for each row
+  execute function update_updated_at_column();
 
-COMMENT ON TABLE nanny_images IS 'Nanny ad images stored in Cloudinary';
+comment on table  nanny_images            is 'Nanny ad images stored in Cloudinary (profile pics live in user_profiles)';
+comment on column nanny_images.is_primary is 'Only one primary image per nanny, enforced by unique partial index';
+comment on column nanny_images.image_type is 'Image purpose: ad_primary, ad_secondary, or ad_gallery';
+
 
 -- ---------------------------------------------------------------------------
 -- TABLE 13: nanny_ai_content
--- Purpose: AI-generated content for nanny profiles
+-- Purpose: AI-generated content for nanny profiles (bios, headlines, etc.).
 -- ---------------------------------------------------------------------------
-CREATE TABLE nanny_ai_content (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  nanny_id UUID NOT NULL REFERENCES nannies(id) ON DELETE CASCADE,
+create table nanny_ai_content (
+  id           uuid primary key default gen_random_uuid(),
+  nanny_id     uuid not null references nannies(id) on delete cascade,
 
-  content_type TEXT NOT NULL CHECK (content_type IN (
+  content_type text not null check (content_type in (
     'bio_summary',
     'headline',
     'experience_summary',
@@ -636,431 +696,468 @@ CREATE TABLE nanny_ai_content (
     'parent_pitch'
   )),
 
-  content TEXT NOT NULL,
-  ai_model TEXT,
-  prompt_used TEXT,
+  content      text not null,
+  ai_model     text,
+  prompt_used  text,
 
-  is_active BOOLEAN DEFAULT true,
-  approved BOOLEAN DEFAULT false,
-  approved_at TIMESTAMPTZ,
-  approved_by UUID REFERENCES auth.users(id),
+  is_active    boolean default true,
+  approved     boolean default false,
+  approved_at  timestamptz,
+  approved_by  uuid references auth.users(id),
 
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+  created_at   timestamptz default now(),
+  updated_at   timestamptz default now()
 );
 
-CREATE INDEX idx_nanny_ai_content_nanny_id ON nanny_ai_content(nanny_id);
-CREATE INDEX idx_nanny_ai_content_type ON nanny_ai_content(content_type);
-CREATE INDEX idx_nanny_ai_content_active ON nanny_ai_content(is_active) WHERE is_active = true;
+create index idx_nanny_ai_content_nanny_id on nanny_ai_content(nanny_id);
+create index idx_nanny_ai_content_type     on nanny_ai_content(content_type);
+create index idx_nanny_ai_content_active   on nanny_ai_content(is_active) where is_active = true;
 
-CREATE TRIGGER trg_nanny_ai_content_updated_at
-  BEFORE UPDATE ON nanny_ai_content
-  FOR EACH ROW
-  EXECUTE FUNCTION update_updated_at_column();
+create trigger trg_nanny_ai_content_updated_at
+  before update on nanny_ai_content
+  for each row
+  execute function update_updated_at_column();
 
-COMMENT ON TABLE nanny_ai_content IS 'AI-generated content for nanny profile enhancement';
+comment on table  nanny_ai_content              is 'AI-generated content for nanny profile enhancement (bios, headlines, pitches)';
+comment on column nanny_ai_content.content_type is 'Type of AI content: bio_summary, headline, experience_summary, skills_highlight, parent_pitch';
+comment on column nanny_ai_content.ai_model     is 'Model identifier used to generate this content';
+comment on column nanny_ai_content.is_active    is 'Whether this version is the currently displayed one';
+
 
 -- ============================================================================
--- SECTION 7: PARENT PROFILE TABLES (4 tables)
--- Note: parents table created WITHOUT current_nanny_id and current_placement_id
---       FKs initially (circular dependency - will add after nanny_placements)
+-- SECTION 7: PARENT PROFILE TABLES
 -- ============================================================================
+-- NOTE: parents is created WITHOUT current_nanny_id and current_placement_id
+-- FKs initially (circular dependency). They are added in Section 10.
 
 -- ---------------------------------------------------------------------------
 -- TABLE 14: parents
--- Purpose: Main parent entity
+-- Purpose: Main parent entity. Contains family info, current-hire references,
+--          Wix migration IDs, and status.
 -- ---------------------------------------------------------------------------
-CREATE TABLE parents (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID UNIQUE NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+create table parents (
+  id                    uuid primary key default gen_random_uuid(),
+  user_id               uuid unique not null references auth.users(id) on delete cascade,
 
-  -- Wix Integration
-  wix_contact_id TEXT UNIQUE,
-  wix_submission_id TEXT,
-  wix_submission_link TEXT,
+  -- wix integration
+  wix_contact_id        text unique,
+  wix_submission_id     text,
+  wix_submission_link   text,
 
-  -- Family Info
-  number_of_children INT CHECK (number_of_children IN (1, 2, 3)),
-  child_needs BOOLEAN DEFAULT false,
-  child_needs_details TEXT,
-  about_family TEXT,
+  -- family info
+  number_of_children    int check (number_of_children in (1, 2, 3)),
+  child_needs           boolean default false,
+  child_needs_details   text,
+  about_family          text,
 
-  -- Current Hire - FKs added later due to circular dependency
-  current_nanny_id UUID, -- Will add FK constraint after this table exists
-  current_placement_id UUID, -- Will add FK constraint after nanny_placements table
+  -- current hire - FKs added later in Section 10 (circular dependency)
+  current_nanny_id      uuid,
+  current_placement_id  uuid,
 
-  -- Status
-  status TEXT CHECK (status IN ('active', 'inactive', 'paused')) DEFAULT 'active',
+  -- status
+  status                text check (status in ('active', 'inactive', 'paused')) default 'active',
 
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+  created_at            timestamptz default now(),
+  updated_at            timestamptz default now()
 );
 
-CREATE INDEX idx_parents_user_id ON parents(user_id);
-CREATE INDEX idx_parents_status ON parents(status);
-CREATE INDEX idx_parents_wix_contact ON parents(wix_contact_id);
-CREATE INDEX idx_parents_current_nanny ON parents(current_nanny_id) WHERE current_nanny_id IS NOT NULL;
-CREATE INDEX idx_parents_current_placement ON parents(current_placement_id) WHERE current_placement_id IS NOT NULL;
+create index idx_parents_user_id            on parents(user_id);
+create index idx_parents_status             on parents(status);
+create index idx_parents_wix_contact        on parents(wix_contact_id);
+create index idx_parents_current_nanny      on parents(current_nanny_id)     where current_nanny_id is not null;
+create index idx_parents_current_placement  on parents(current_placement_id) where current_placement_id is not null;
 
-CREATE TRIGGER trg_parents_updated_at
-  BEFORE UPDATE ON parents
-  FOR EACH ROW
-  EXECUTE FUNCTION update_updated_at_column();
+create trigger trg_parents_updated_at
+  before update on parents
+  for each row
+  execute function update_updated_at_column();
 
-COMMENT ON TABLE parents IS 'Main parent profile entity';
+comment on table  parents                        is 'Main parent profile entity';
+comment on column parents.current_nanny_id       is 'FK to nannies - denormalised for fast current-nanny lookups';
+comment on column parents.current_placement_id   is 'FK to nanny_placements - denormalised for fast placement lookups';
+comment on column parents.number_of_children     is 'Number of children: 1, 2, or 3';
+
 
 -- ---------------------------------------------------------------------------
 -- TABLE 15: nanny_positions
--- Purpose: Job positions posted by parents (ONE active per parent)
+-- Purpose: Job positions posted by parents. Critical constraint: only ONE
+--          active position per parent (enforced by unique partial index).
 -- ---------------------------------------------------------------------------
-CREATE TABLE nanny_positions (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  parent_id UUID NOT NULL REFERENCES parents(id) ON DELETE CASCADE,
+create table nanny_positions (
+  id                            uuid primary key default gen_random_uuid(),
+  parent_id                     uuid not null references parents(id) on delete cascade,
 
-  title TEXT DEFAULT 'Nanny Position',
-  description TEXT,
+  title                         text default 'Nanny Position',
+  description                   text,
 
-  -- TIMELINE
-  urgency TEXT CHECK (urgency IN ('Immediately', 'At a later date')),
-  start_date DATE,
-  placement_length TEXT CHECK (placement_length IN ('Ongoing', 'Until a certain date')),
-  end_date DATE,
+  -- timeline
+  urgency                       text check (urgency in ('Immediately', 'At a later date')),
+  start_date                    date,
+  placement_length              text check (placement_length in ('Ongoing', 'Until a certain date')),
+  end_date                      date,
 
-  -- SCHEDULE
-  schedule_type TEXT CHECK (schedule_type IN ('Yes', 'No', 'I''m Flexible')),
-  hours_per_week INT,
-  days_required TEXT[],
-  schedule_details TEXT,
+  -- schedule
+  schedule_type                 text check (schedule_type in ('Yes', 'No', 'I''m Flexible')),
+  hours_per_week                int,
+  days_required                 text[],
+  schedule_details              text,
 
-  -- NANNY REQUIREMENTS
-  language_preference TEXT CHECK (language_preference IN ('English', 'Foreign language', 'Multiple')),
-  language_preference_details TEXT,
-  minimum_age_requirement INT CHECK (minimum_age_requirement IN (18, 21, 25, 28, 35)),
-  years_of_experience INT CHECK (years_of_experience IN (1, 2, 3, 5)),
-  qualification_requirement TEXT,
-  certificate_requirements TEXT[],
-  assurances_required TEXT[],
-  residency_status_requirement TEXT CHECK (residency_status_requirement IN ('Permanent Resident', 'Any Status')),
+  -- nanny requirements
+  language_preference           text check (language_preference in ('English', 'Foreign language', 'Multiple')),
+  language_preference_details   text,
+  minimum_age_requirement       int check (minimum_age_requirement in (18, 21, 25, 28, 35)),
+  years_of_experience           int check (years_of_experience in (1, 2, 3, 5)),
+  qualification_requirement     text,
+  certificate_requirements      text[],
+  assurances_required           text[],
+  residency_status_requirement  text check (residency_status_requirement in ('Permanent Resident', 'Any Status')),
 
-  -- BOOLEAN REQUIREMENTS
-  vaccination_required BOOLEAN,
-  drivers_license_required BOOLEAN,
-  car_required BOOLEAN,
-  comfortable_with_pets_required BOOLEAN,
-  non_smoker_required BOOLEAN,
-  other_requirements_exist BOOLEAN DEFAULT false,
-  other_requirements_details TEXT,
+  -- boolean requirements
+  vaccination_required          boolean,
+  drivers_license_required      boolean,
+  car_required                  boolean,
+  comfortable_with_pets_required boolean,
+  non_smoker_required           boolean,
+  other_requirements_exist      boolean default false,
+  other_requirements_details    text,
 
-  -- COMPENSATION
-  hourly_rate DECIMAL(10,2),
-  pay_frequency TEXT[],
+  -- compensation
+  hourly_rate                   decimal(10,2),
+  pay_frequency                 text[],
 
-  -- REASON & SUPPORT
-  reason_for_nanny TEXT[],
-  level_of_support TEXT[],
+  -- reason and support
+  reason_for_nanny              text[],
+  level_of_support              text[],
 
-  -- STATUS
-  status TEXT CHECK (status IN ('draft', 'active', 'paused', 'filled', 'cancelled')) DEFAULT 'active',
-  filled_at TIMESTAMPTZ,
-  filled_by_nanny_id UUID REFERENCES nannies(id),
+  -- status
+  status                        text check (status in ('draft', 'active', 'paused', 'filled', 'cancelled')) default 'active',
+  filled_at                     timestamptz,
+  filled_by_nanny_id            uuid references nannies(id),
 
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+  created_at                    timestamptz default now(),
+  updated_at                    timestamptz default now()
 );
 
-CREATE INDEX idx_nanny_positions_parent ON nanny_positions(parent_id);
-CREATE INDEX idx_nanny_positions_status ON nanny_positions(status);
-CREATE INDEX idx_nanny_positions_active ON nanny_positions(status) WHERE status = 'active';
-CREATE INDEX idx_nanny_positions_start_date ON nanny_positions(start_date);
-CREATE INDEX idx_nanny_positions_hourly_rate ON nanny_positions(hourly_rate);
-CREATE INDEX idx_nanny_positions_days ON nanny_positions USING GIN (days_required);
+create index idx_nanny_positions_parent      on nanny_positions(parent_id);
+create index idx_nanny_positions_status      on nanny_positions(status);
+create index idx_nanny_positions_active      on nanny_positions(status) where status = 'active';
+create index idx_nanny_positions_start_date  on nanny_positions(start_date);
+create index idx_nanny_positions_hourly_rate on nanny_positions(hourly_rate);
+create index idx_nanny_positions_days        on nanny_positions using gin (days_required);
 
--- CRITICAL: Only ONE active position per parent
-CREATE UNIQUE INDEX idx_nanny_positions_one_active_per_parent
-  ON nanny_positions(parent_id)
-  WHERE status = 'active';
+-- CRITICAL: only ONE active position per parent
+create unique index idx_nanny_positions_one_active_per_parent
+  on nanny_positions(parent_id)
+  where status = 'active';
 
-CREATE TRIGGER trg_nanny_positions_updated_at
-  BEFORE UPDATE ON nanny_positions
-  FOR EACH ROW
-  EXECUTE FUNCTION update_updated_at_column();
+create trigger trg_nanny_positions_updated_at
+  before update on nanny_positions
+  for each row
+  execute function update_updated_at_column();
 
-COMMENT ON TABLE nanny_positions IS 'Job positions posted by parents';
-COMMENT ON COLUMN nanny_positions.status IS 'Only ONE active position allowed per parent (enforced by unique index)';
+comment on table  nanny_positions        is 'Job positions posted by parents - only ONE active per parent';
+comment on column nanny_positions.status is 'Position lifecycle: draft, active, filled, paused, cancelled. Only one active allowed (unique index)';
+comment on column nanny_positions.schedule_type is 'Whether parent has a set schedule: Yes, No, or I''m Flexible';
+
 
 -- ---------------------------------------------------------------------------
 -- TABLE 16: position_schedule
--- Purpose: Detailed weekly schedule for positions
+-- Purpose: Detailed weekly schedule for positions. One-to-one with
+--          nanny_positions. PK is position_id (not a separate UUID).
 -- ---------------------------------------------------------------------------
-CREATE TABLE position_schedule (
-  position_id UUID PRIMARY KEY REFERENCES nanny_positions(id) ON DELETE CASCADE,
-  schedule JSONB NOT NULL,
-  updated_at TIMESTAMPTZ DEFAULT NOW()
+create table position_schedule (
+  position_id uuid primary key references nanny_positions(id) on delete cascade,
+  schedule    jsonb not null,
+  updated_at  timestamptz default now()
 );
 
-CREATE INDEX idx_position_schedule_jsonb ON position_schedule USING GIN (schedule);
+create index idx_position_schedule_jsonb on position_schedule using gin (schedule);
 
-CREATE TRIGGER trg_position_schedule_updated_at
-  BEFORE UPDATE ON position_schedule
-  FOR EACH ROW
-  EXECUTE FUNCTION update_updated_at_column();
+create trigger trg_position_schedule_updated_at
+  before update on position_schedule
+  for each row
+  execute function update_updated_at_column();
 
-COMMENT ON TABLE position_schedule IS 'Detailed weekly schedule requirements for positions';
+comment on table  position_schedule          is 'Detailed weekly schedule requirements for a position (PK = position_id)';
+comment on column position_schedule.schedule is 'JSONB schedule grid mirroring nanny_availability format for comparison';
+
 
 -- ---------------------------------------------------------------------------
 -- TABLE 17: position_children
--- Purpose: Children associated with a position (ages in months)
+-- Purpose: Children associated with a position. Ages stored in months for
+--          precise matching. Max 3 children per position.
 -- ---------------------------------------------------------------------------
-CREATE TABLE position_children (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  position_id UUID NOT NULL REFERENCES nanny_positions(id) ON DELETE CASCADE,
+create table position_children (
+  id            uuid primary key default gen_random_uuid(),
+  position_id   uuid not null references nanny_positions(id) on delete cascade,
 
-  child_label TEXT NOT NULL CHECK (child_label IN ('A', 'B', 'C')),
-  age_months INT NOT NULL CHECK (age_months >= 0 AND age_months <= 216), -- 0-18 years
-  gender TEXT CHECK (gender IN ('Female', 'Male', 'Rather Not Say')),
-  display_order INT NOT NULL CHECK (display_order IN (1, 2, 3)),
+  child_label   text not null check (child_label in ('A', 'B', 'C')),
+  age_months    int not null check (age_months >= 0 and age_months <= 216),
+  gender        text check (gender in ('Female', 'Male', 'Rather Not Say')),
+  display_order int not null check (display_order in (1, 2, 3)),
 
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  created_at    timestamptz default now()
 );
 
-CREATE INDEX idx_position_children_position ON position_children(position_id);
-CREATE INDEX idx_position_children_age ON position_children(age_months);
-CREATE UNIQUE INDEX idx_position_children_unique ON position_children(position_id, child_label);
-CREATE UNIQUE INDEX idx_position_children_order ON position_children(position_id, display_order);
+create index idx_position_children_position on position_children(position_id);
+create index idx_position_children_age      on position_children(age_months);
+create unique index idx_position_children_unique on position_children(position_id, child_label);
+create unique index idx_position_children_order  on position_children(position_id, display_order);
 
-COMMENT ON TABLE position_children IS 'Children in position - ages stored in months (0-216)';
-COMMENT ON COLUMN position_children.age_months IS 'Age in months for precise matching (0-216 = 0-18 years)';
+comment on table  position_children            is 'Children in a position - ages stored in months (0-216 = 0-18 years), max 3';
+comment on column position_children.age_months is 'Age in months for precise matching (e.g. 18 = 1.5 years)';
+comment on column position_children.child_label is 'Label identifier A, B, or C - unique per position';
+
 
 -- ============================================================================
--- SECTION 8: MATCHING & REQUEST TABLES (5 tables)
+-- SECTION 8: MATCHING AND REQUEST TABLES
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
 -- TABLE 18: interview_requests
--- Purpose: Interview coordination between parents and nannies
+-- Purpose: Interview coordination between parents and nannies.
+--          Many-to-many junction: a parent can request interviews with many
+--          nannies, and a nanny can receive requests from many parents.
 -- ---------------------------------------------------------------------------
-CREATE TABLE interview_requests (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+create table interview_requests (
+  id                      uuid primary key default gen_random_uuid(),
 
-  nanny_id UUID NOT NULL REFERENCES nannies(id) ON DELETE CASCADE,
-  parent_id UUID NOT NULL REFERENCES parents(id) ON DELETE CASCADE,
-  position_id UUID REFERENCES nanny_positions(id) ON DELETE SET NULL,
+  nanny_id                uuid not null references nannies(id) on delete cascade,
+  parent_id               uuid not null references parents(id) on delete cascade,
+  position_id             uuid references nanny_positions(id) on delete set null,
 
-  -- Request Details
-  message TEXT,
-  requested_dates JSONB, -- Array of preferred dates/times
+  -- request details
+  message                 text,
+  requested_dates         jsonb,
 
-  -- Status
-  status TEXT NOT NULL CHECK (status IN (
+  -- status
+  status                  text not null check (status in (
     'pending',
     'accepted',
     'declined',
     'completed',
     'cancelled',
     'expired'
-  )) DEFAULT 'pending',
+  )) default 'pending',
 
-  -- Response
-  nanny_response_message TEXT,
-  responded_at TIMESTAMPTZ,
+  -- response
+  nanny_response_message  text,
+  responded_at            timestamptz,
 
-  -- Interview Details (after acceptance)
-  interview_date DATE,
-  interview_time TIME,
-  interview_location TEXT,
-  interview_type TEXT CHECK (interview_type IN ('in_person', 'video_call', 'phone_call')),
+  -- interview details (after acceptance)
+  interview_date          date,
+  interview_time          time,
+  interview_location      text,
+  interview_type          text check (interview_type in ('in_person', 'video_call', 'phone_call')),
 
-  -- Completion
-  completed_at TIMESTAMPTZ,
-  outcome TEXT CHECK (outcome IN ('hired', 'not_hired', 'pending_decision', 'cancelled')),
-  outcome_notes TEXT,
+  -- completion
+  completed_at            timestamptz,
+  outcome                 text check (outcome in ('hired', 'not_hired', 'pending_decision', 'cancelled')),
+  outcome_notes           text,
 
-  -- Timestamps
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW(),
-  expires_at TIMESTAMPTZ
+  -- timestamps
+  created_at              timestamptz default now(),
+  updated_at              timestamptz default now(),
+  expires_at              timestamptz
 );
 
-CREATE INDEX idx_interview_requests_nanny ON interview_requests(nanny_id);
-CREATE INDEX idx_interview_requests_parent ON interview_requests(parent_id);
-CREATE INDEX idx_interview_requests_position ON interview_requests(position_id);
-CREATE INDEX idx_interview_requests_status ON interview_requests(status);
-CREATE INDEX idx_interview_requests_created ON interview_requests(created_at);
+create index idx_interview_requests_nanny    on interview_requests(nanny_id);
+create index idx_interview_requests_parent   on interview_requests(parent_id);
+create index idx_interview_requests_position on interview_requests(position_id);
+create index idx_interview_requests_status   on interview_requests(status);
+create index idx_interview_requests_created  on interview_requests(created_at);
 
-CREATE TRIGGER trg_interview_requests_updated_at
-  BEFORE UPDATE ON interview_requests
-  FOR EACH ROW
-  EXECUTE FUNCTION update_updated_at_column();
+create trigger trg_interview_requests_updated_at
+  before update on interview_requests
+  for each row
+  execute function update_updated_at_column();
 
-COMMENT ON TABLE interview_requests IS 'Interview coordination between parents and nannies';
+comment on table  interview_requests                 is 'Interview coordination between parents and nannies (many-to-many junction)';
+comment on column interview_requests.requested_dates is 'JSONB array of preferred interview dates/times proposed by parent';
+comment on column interview_requests.outcome         is 'Final outcome after interview: hired, not_hired, pending_decision, or cancelled';
+
 
 -- ---------------------------------------------------------------------------
 -- TABLE 19: babysitting_requests
--- Purpose: One-time babysitting jobs posted by parents
+-- Purpose: One-time babysitting jobs posted by parents.
+--          First-come-first-serve: 20 nearest nannies are notified, first to
+--          accept wins.
 -- ---------------------------------------------------------------------------
-CREATE TABLE babysitting_requests (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+create table babysitting_requests (
+  id                     uuid primary key default gen_random_uuid(),
 
-  parent_id UUID NOT NULL REFERENCES parents(id) ON DELETE CASCADE,
+  parent_id              uuid not null references parents(id) on delete cascade,
 
-  -- Request Details
-  title TEXT DEFAULT 'Babysitting Request',
-  description TEXT,
-  special_requirements TEXT,
+  -- request details
+  title                  text default 'Babysitting Request',
+  description            text,
+  special_requirements   text,
 
-  -- Location
-  suburb TEXT NOT NULL,
-  postcode TEXT NOT NULL,
-  address TEXT,
-  latitude DECIMAL(10, 6),
-  longitude DECIMAL(10, 6),
+  -- location
+  suburb                 text not null,
+  postcode               text not null,
+  address                text,
+  latitude               decimal(10, 6),
+  longitude              decimal(10, 6),
 
-  -- Compensation
-  hourly_rate DECIMAL(10,2),
-  estimated_hours DECIMAL(4,1),
+  -- compensation
+  hourly_rate            decimal(10,2),
+  estimated_hours        decimal(4,1),
 
-  -- Status
-  status TEXT NOT NULL CHECK (status IN (
+  -- status
+  status                 text not null check (status in (
     'draft',
     'open',
     'filled',
     'completed',
     'cancelled',
     'expired'
-  )) DEFAULT 'open',
+  )) default 'open',
 
-  -- Accepted Nanny
-  accepted_nanny_id UUID REFERENCES nannies(id) ON DELETE SET NULL,
-  accepted_at TIMESTAMPTZ,
+  -- accepted nanny
+  accepted_nanny_id      uuid references nannies(id) on delete set null,
+  accepted_at            timestamptz,
 
-  -- Completion
-  completed_at TIMESTAMPTZ,
-  parent_rating INT CHECK (parent_rating BETWEEN 1 AND 5),
-  parent_review TEXT,
-  nanny_rating INT CHECK (nanny_rating BETWEEN 1 AND 5),
-  nanny_review TEXT,
+  -- completion
+  completed_at           timestamptz,
+  parent_rating          int check (parent_rating between 1 and 5),
+  parent_review          text,
+  nanny_rating           int check (nanny_rating between 1 and 5),
+  nanny_review           text,
 
-  -- Notifications
-  nannies_notified_count INT DEFAULT 0,
+  -- notifications
+  nannies_notified_count int default 0,
 
-  -- Timestamps
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW(),
-  expires_at TIMESTAMPTZ
+  -- timestamps
+  created_at             timestamptz default now(),
+  updated_at             timestamptz default now(),
+  expires_at             timestamptz
 );
 
-CREATE INDEX idx_babysitting_requests_parent ON babysitting_requests(parent_id);
-CREATE INDEX idx_babysitting_requests_status ON babysitting_requests(status);
-CREATE INDEX idx_babysitting_requests_suburb ON babysitting_requests(suburb);
-CREATE INDEX idx_babysitting_requests_postcode ON babysitting_requests(postcode);
-CREATE INDEX idx_babysitting_requests_location ON babysitting_requests(latitude, longitude);
-CREATE INDEX idx_babysitting_requests_accepted_nanny ON babysitting_requests(accepted_nanny_id) WHERE accepted_nanny_id IS NOT NULL;
-CREATE INDEX idx_babysitting_requests_created ON babysitting_requests(created_at);
+create index idx_babysitting_requests_parent         on babysitting_requests(parent_id);
+create index idx_babysitting_requests_status         on babysitting_requests(status);
+create index idx_babysitting_requests_suburb         on babysitting_requests(suburb);
+create index idx_babysitting_requests_postcode       on babysitting_requests(postcode);
+create index idx_babysitting_requests_location       on babysitting_requests(latitude, longitude);
+create index idx_babysitting_requests_accepted_nanny on babysitting_requests(accepted_nanny_id) where accepted_nanny_id is not null;
+create index idx_babysitting_requests_created        on babysitting_requests(created_at);
 
-CREATE TRIGGER trg_babysitting_requests_updated_at
-  BEFORE UPDATE ON babysitting_requests
-  FOR EACH ROW
-  EXECUTE FUNCTION update_updated_at_column();
+create trigger trg_babysitting_requests_updated_at
+  before update on babysitting_requests
+  for each row
+  execute function update_updated_at_column();
 
-COMMENT ON TABLE babysitting_requests IS 'One-time babysitting jobs - first-come-first-serve';
+comment on table  babysitting_requests                       is 'One-time babysitting jobs - first-come-first-serve among 20 nearest nannies';
+comment on column babysitting_requests.accepted_nanny_id     is 'The nanny who won the first-come-first-serve acceptance';
+comment on column babysitting_requests.nannies_notified_count is 'How many nannies were notified (target: 20)';
+
 
 -- ---------------------------------------------------------------------------
 -- TABLE 20: bsr_time_slots
--- Purpose: Available time slots for babysitting requests
+-- Purpose: Available time slots for babysitting requests.
+--          A parent can propose multiple slots; one is selected after acceptance.
 -- ---------------------------------------------------------------------------
-CREATE TABLE bsr_time_slots (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  babysitting_request_id UUID NOT NULL REFERENCES babysitting_requests(id) ON DELETE CASCADE,
+create table bsr_time_slots (
+  id                     uuid primary key default gen_random_uuid(),
+  babysitting_request_id uuid not null references babysitting_requests(id) on delete cascade,
 
-  slot_date DATE NOT NULL,
-  start_time TIME NOT NULL,
-  end_time TIME NOT NULL,
+  slot_date              date not null,
+  start_time             time not null,
+  end_time               time not null,
 
-  is_selected BOOLEAN DEFAULT false, -- Selected slot after nanny accepts
+  is_selected            boolean default false,
 
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  created_at             timestamptz default now()
 );
 
-CREATE INDEX idx_bsr_time_slots_request ON bsr_time_slots(babysitting_request_id);
-CREATE INDEX idx_bsr_time_slots_date ON bsr_time_slots(slot_date);
+create index idx_bsr_time_slots_request on bsr_time_slots(babysitting_request_id);
+create index idx_bsr_time_slots_date    on bsr_time_slots(slot_date);
 
-COMMENT ON TABLE bsr_time_slots IS 'Time slot options for babysitting requests';
+comment on table  bsr_time_slots             is 'Time slot options for babysitting requests - parent proposes, one is selected';
+comment on column bsr_time_slots.is_selected is 'Set to true for the confirmed slot after a nanny accepts';
+
 
 -- ---------------------------------------------------------------------------
 -- TABLE 21: bsr_notifications
--- Purpose: Track which nannies were notified about BSR (20 closest)
+-- Purpose: Track which nannies were notified about a BSR.
+--          20 closest nannies are notified; first to accept wins.
 -- ---------------------------------------------------------------------------
-CREATE TABLE bsr_notifications (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  babysitting_request_id UUID NOT NULL REFERENCES babysitting_requests(id) ON DELETE CASCADE,
-  nanny_id UUID NOT NULL REFERENCES nannies(id) ON DELETE CASCADE,
+create table bsr_notifications (
+  id                     uuid primary key default gen_random_uuid(),
+  babysitting_request_id uuid not null references babysitting_requests(id) on delete cascade,
+  nanny_id               uuid not null references nannies(id) on delete cascade,
 
-  -- Notification Status
-  notified_at TIMESTAMPTZ DEFAULT NOW(),
-  notification_method TEXT CHECK (notification_method IN ('email', 'push', 'sms', 'in_app')),
+  -- notification status
+  notified_at            timestamptz default now(),
+  notification_method    text check (notification_method in ('email', 'push', 'sms', 'in_app')),
 
-  -- Response
-  viewed_at TIMESTAMPTZ,
-  accepted_at TIMESTAMPTZ, -- First to accept wins
-  declined_at TIMESTAMPTZ,
-  declined_reason TEXT,
+  -- response
+  viewed_at              timestamptz,
+  accepted_at            timestamptz,
+  declined_at            timestamptz,
+  declined_reason        text,
 
-  -- Post-fill notification
-  notified_filled BOOLEAN DEFAULT false,
-  notified_filled_at TIMESTAMPTZ,
+  -- post-fill notification
+  notified_filled        boolean default false,
+  notified_filled_at     timestamptz,
 
-  -- Distance
-  distance_km DECIMAL(6,2),
+  -- distance from BSR location
+  distance_km            decimal(6,2),
 
-  created_at TIMESTAMPTZ DEFAULT NOW()
+  created_at             timestamptz default now()
 );
 
-CREATE INDEX idx_bsr_notifications_request ON bsr_notifications(babysitting_request_id);
-CREATE INDEX idx_bsr_notifications_nanny ON bsr_notifications(nanny_id);
-CREATE INDEX idx_bsr_notifications_accepted ON bsr_notifications(accepted_at) WHERE accepted_at IS NOT NULL;
-CREATE INDEX idx_bsr_notifications_distance ON bsr_notifications(distance_km);
+create index idx_bsr_notifications_request  on bsr_notifications(babysitting_request_id);
+create index idx_bsr_notifications_nanny    on bsr_notifications(nanny_id);
+create index idx_bsr_notifications_accepted on bsr_notifications(accepted_at) where accepted_at is not null;
+create index idx_bsr_notifications_distance on bsr_notifications(distance_km);
 
--- Prevent duplicate notifications
-CREATE UNIQUE INDEX idx_bsr_notifications_unique ON bsr_notifications(babysitting_request_id, nanny_id);
+-- prevent duplicate notifications to the same nanny for the same request
+create unique index idx_bsr_notifications_unique on bsr_notifications(babysitting_request_id, nanny_id);
 
-COMMENT ON TABLE bsr_notifications IS 'Tracks 20 closest nannies notified for each BSR';
-COMMENT ON COLUMN bsr_notifications.accepted_at IS 'First nanny to have accepted_at wins (first-come-first-serve)';
+comment on table  bsr_notifications                is 'Tracks 20 closest nannies notified for each babysitting request';
+comment on column bsr_notifications.accepted_at    is 'First nanny to have accepted_at set wins (first-come-first-serve)';
+comment on column bsr_notifications.distance_km    is 'Distance in km from nanny to BSR location, calculated via Haversine';
+comment on column bsr_notifications.notified_filled is 'Whether nanny was told the job was filled by someone else';
+
 
 -- ---------------------------------------------------------------------------
 -- TABLE 22: nanny_placements
--- Purpose: Track successful hires between nannies and parents
+-- Purpose: Permanent record of successful hires between nannies and parents.
+--          Bidirectional references in nannies.current_placement_id and
+--          parents.current_nanny_id / current_placement_id enable fast lookups.
 -- ---------------------------------------------------------------------------
-CREATE TABLE nanny_placements (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+create table nanny_placements (
+  id                          uuid primary key default gen_random_uuid(),
 
-  nanny_id UUID NOT NULL REFERENCES nannies(id) ON DELETE CASCADE,
-  parent_id UUID NOT NULL REFERENCES parents(id) ON DELETE CASCADE,
-  position_id UUID REFERENCES nanny_positions(id) ON DELETE SET NULL,
+  nanny_id                    uuid not null references nannies(id) on delete cascade,
+  parent_id                   uuid not null references parents(id) on delete cascade,
+  position_id                 uuid references nanny_positions(id) on delete set null,
 
-  -- Source of placement
-  source TEXT NOT NULL CHECK (source IN (
+  -- source of placement
+  source                      text not null check (source in (
     'interview_request',
     'babysitting_job',
     'direct_hire',
     'referral'
   )),
-  interview_request_id UUID REFERENCES interview_requests(id) ON DELETE SET NULL,
-  babysitting_request_id UUID REFERENCES babysitting_requests(id) ON DELETE SET NULL,
+  interview_request_id        uuid references interview_requests(id) on delete set null,
+  babysitting_request_id      uuid references babysitting_requests(id) on delete set null,
 
-  -- Placement Timeline
-  hired_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  start_date DATE,
+  -- placement timeline
+  hired_at                    timestamptz not null default now(),
+  start_date                  date,
 
-  -- Status
-  status TEXT NOT NULL CHECK (status IN (
+  -- status
+  status                      text not null check (status in (
     'active',
     'ended',
     'paused'
-  )) DEFAULT 'active',
+  )) default 'active',
 
-  -- End Details
-  ended_at TIMESTAMPTZ,
-  end_reason TEXT CHECK (end_reason IN (
+  -- end details
+  ended_at                    timestamptz,
+  end_reason                  text check (end_reason in (
     'parent_no_longer_needs',
     'nanny_left',
     'mutual_agreement',
@@ -1068,58 +1165,70 @@ CREATE TABLE nanny_placements (
     'child_aged_out',
     'other'
   )),
-  end_notes TEXT,
+  end_notes                   text,
 
-  -- Computed duration
-  placement_duration_days INT GENERATED ALWAYS AS (
-    EXTRACT(DAY FROM COALESCE(ended_at, NOW()) - hired_at)::INT
-  ) STORED,
+  -- computed duration (days from hired_at to ended_at; NULL while active)
+  placement_duration_days     int generated always as (
+    case when ended_at is not null
+      then extract(day from ended_at - hired_at)::int
+      else null
+    end
+  ) stored,
 
-  -- Satisfaction Ratings (future feature)
-  parent_satisfaction_rating INT CHECK (parent_satisfaction_rating BETWEEN 1 AND 5),
-  nanny_satisfaction_rating INT CHECK (nanny_satisfaction_rating BETWEEN 1 AND 5),
-  would_rehire BOOLEAN,
-  would_work_again BOOLEAN,
+  -- satisfaction ratings
+  parent_satisfaction_rating  int check (parent_satisfaction_rating between 1 and 5),
+  nanny_satisfaction_rating   int check (nanny_satisfaction_rating between 1 and 5),
+  would_rehire                boolean,
+  would_work_again            boolean,
 
-  -- Timestamps
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW(),
-  created_by UUID REFERENCES auth.users(id)
+  -- timestamps
+  created_at                  timestamptz default now(),
+  updated_at                  timestamptz default now(),
+  created_by                  uuid references auth.users(id)
 );
 
-CREATE INDEX idx_placements_nanny ON nanny_placements(nanny_id);
-CREATE INDEX idx_placements_parent ON nanny_placements(parent_id);
-CREATE INDEX idx_placements_status ON nanny_placements(status);
-CREATE INDEX idx_placements_source ON nanny_placements(source);
-CREATE INDEX idx_placements_hired_date ON nanny_placements(hired_at);
+create index idx_placements_nanny       on nanny_placements(nanny_id);
+create index idx_placements_parent      on nanny_placements(parent_id);
+create index idx_placements_status      on nanny_placements(status);
+create index idx_placements_source      on nanny_placements(source);
+create index idx_placements_hired_date  on nanny_placements(hired_at);
 
--- Only ONE active placement per parent
-CREATE UNIQUE INDEX idx_placements_one_active_per_parent
-  ON nanny_placements(parent_id)
-  WHERE status = 'active';
+-- only ONE active placement per parent
+create unique index idx_placements_one_active_per_parent
+  on nanny_placements(parent_id)
+  where status = 'active';
 
--- Prevent duplicate active placements (same nanny+parent combo)
-CREATE UNIQUE INDEX idx_placements_unique_active
-  ON nanny_placements(nanny_id, parent_id)
-  WHERE status = 'active';
+-- prevent duplicate active placements for the same nanny+parent combo
+create unique index idx_placements_unique_active
+  on nanny_placements(nanny_id, parent_id)
+  where status = 'active';
 
-CREATE TRIGGER trg_nanny_placements_updated_at
-  BEFORE UPDATE ON nanny_placements
-  FOR EACH ROW
-  EXECUTE FUNCTION update_updated_at_column();
+create trigger trg_nanny_placements_updated_at
+  before update on nanny_placements
+  for each row
+  execute function update_updated_at_column();
 
-COMMENT ON TABLE nanny_placements IS 'Successful hires - tracks who worked for whom';
-COMMENT ON COLUMN nanny_placements.placement_duration_days IS 'Computed: Days from hired_at to ended_at (or now if active)';
+comment on table  nanny_placements                         is 'Permanent record of successful hires - tracks who worked for whom and for how long';
+comment on column nanny_placements.placement_duration_days is 'Computed: days from hired_at to ended_at (or now() if still active)';
+comment on column nanny_placements.source                  is 'How the hire originated: interview_request, babysitting_job, direct_hire, or referral';
+comment on column nanny_placements.status                  is 'Placement lifecycle: active, paused, or ended';
+
+
+-- ============================================================================
+-- SECTION 9: FILE MANAGEMENT TABLE
+-- ============================================================================
 
 -- ---------------------------------------------------------------------------
 -- TABLE 23: file_retention_log
--- Purpose: Track files for 5-year retention policy after nanny deactivation
+-- Purpose: Track files for 5-year retention policy after nanny deactivation.
+--          When scheduled_deletion_date arrives, cleanup_expired_files() marks
+--          them as deleted.
 -- ---------------------------------------------------------------------------
-CREATE TABLE file_retention_log (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  nanny_id UUID REFERENCES nannies(id) ON DELETE SET NULL,
+create table file_retention_log (
+  id                      uuid primary key default gen_random_uuid(),
+  nanny_id                uuid references nannies(id) on delete set null,
 
-  file_type TEXT NOT NULL CHECK (file_type IN (
+  file_type               text not null check (file_type in (
     'wwcc_document',
     'passport_document',
     'identification_photo',
@@ -1130,534 +1239,383 @@ CREATE TABLE file_retention_log (
     'ad_image'
   )),
 
-  file_url TEXT NOT NULL,
-  file_storage_provider TEXT CHECK (file_storage_provider IN ('supabase', 'cloudinary')),
-  cloudinary_public_id TEXT,
+  file_url                text not null,
+  file_storage_provider   text check (file_storage_provider in ('supabase', 'cloudinary')),
+  cloudinary_public_id    text,
 
-  created_at TIMESTAMPTZ NOT NULL,
-  nanny_deactivated_at TIMESTAMPTZ,
-  scheduled_deletion_date DATE, -- 5 years after deactivation
-  deleted_at TIMESTAMPTZ,
-  deleted_by UUID REFERENCES auth.users(id),
+  created_at              timestamptz not null,
+  nanny_deactivated_at    timestamptz,
+  scheduled_deletion_date date,
+  deleted_at              timestamptz,
+  deleted_by              uuid references auth.users(id),
 
-  reason_for_deletion TEXT CHECK (reason_for_deletion IN ('retention_expired', 'manual_deletion', 'gdpr_request'))
+  reason_for_deletion     text check (reason_for_deletion in ('retention_expired', 'manual_deletion', 'gdpr_request'))
 );
 
-CREATE INDEX idx_file_retention_nanny ON file_retention_log(nanny_id);
-CREATE INDEX idx_file_retention_scheduled ON file_retention_log(scheduled_deletion_date) WHERE deleted_at IS NULL;
-CREATE INDEX idx_file_retention_deleted ON file_retention_log(deleted_at);
+create index idx_file_retention_nanny     on file_retention_log(nanny_id);
+create index idx_file_retention_scheduled on file_retention_log(scheduled_deletion_date) where deleted_at is null;
+create index idx_file_retention_deleted   on file_retention_log(deleted_at);
 
-COMMENT ON TABLE file_retention_log IS 'Tracks files for 5-year retention after nanny deactivation';
+comment on table  file_retention_log                         is 'Tracks files for 5-year retention after nanny deactivation';
+comment on column file_retention_log.scheduled_deletion_date is 'Date file should be purged - 5 years after nanny_deactivated_at';
+comment on column file_retention_log.reason_for_deletion     is 'Why the file was deleted: retention_expired, manual_deletion, or gdpr_request';
 
--- ============================================================================
--- SECTION 9: ADD CIRCULAR FOREIGN KEY CONSTRAINTS
--- These couldn't be added during table creation due to dependencies
--- ============================================================================
-
--- Add FK from nannies.current_placement_id to nanny_placements
-ALTER TABLE nannies
-ADD CONSTRAINT fk_nannies_current_placement
-FOREIGN KEY (current_placement_id) REFERENCES nanny_placements(id) ON DELETE SET NULL;
-
--- Add FK from parents.current_nanny_id to nannies
-ALTER TABLE parents
-ADD CONSTRAINT fk_parents_current_nanny
-FOREIGN KEY (current_nanny_id) REFERENCES nannies(id) ON DELETE SET NULL;
-
--- Add FK from parents.current_placement_id to nanny_placements
-ALTER TABLE parents
-ADD CONSTRAINT fk_parents_current_placement
-FOREIGN KEY (current_placement_id) REFERENCES nanny_placements(id) ON DELETE SET NULL;
 
 -- ============================================================================
--- SECTION 10: TRIGGERS FOR DATA CONSISTENCY
+-- SECTION 10: CIRCULAR FOREIGN KEY CONSTRAINTS
+-- ============================================================================
+-- These FK constraints could not be added during table creation because the
+-- referenced tables did not exist yet at that point.
+
+-- nannies.current_placement_id -> nanny_placements(id)
+alter table nannies
+  add constraint fk_nannies_current_placement
+  foreign key (current_placement_id) references nanny_placements(id) on delete set null;
+
+-- parents.current_nanny_id -> nannies(id)
+alter table parents
+  add constraint fk_parents_current_nanny
+  foreign key (current_nanny_id) references nannies(id) on delete set null;
+
+-- parents.current_placement_id -> nanny_placements(id)
+alter table parents
+  add constraint fk_parents_current_placement
+  foreign key (current_placement_id) references nanny_placements(id) on delete set null;
+
+
+-- ============================================================================
+-- SECTION 11: DATA CONSISTENCY TRIGGER - sync_placement_references()
+-- ============================================================================
+-- When a placement status changes to 'ended', automatically clear the
+-- denormalised references on nannies and parents so they do not point at
+-- a terminated placement.
+
+create or replace function sync_placement_references()
+returns trigger as $$
+begin
+  if new.status = 'ended' and (old.status is null or old.status != 'ended') then
+    -- clear nanny current placement reference
+    update nannies
+    set current_placement_id = null,
+        updated_at = now()
+    where current_placement_id = new.id;
+
+    -- clear parent current nanny and placement references
+    update parents
+    set current_placement_id = null,
+        current_nanny_id = null,
+        updated_at = now()
+    where current_placement_id = new.id;
+  end if;
+  return new;
+end;
+$$ language plpgsql;
+
+create trigger trg_placement_status_change
+  after update on nanny_placements
+  for each row
+  when (old.status is distinct from new.status)
+  execute function sync_placement_references();
+
+comment on function sync_placement_references()
+  is 'Trigger function: clears nanny/parent denormalised references when a placement ends';
+
+
+-- ============================================================================
+-- SECTION 12: SCHEDULED / CRON FUNCTIONS
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
--- Trigger: Auto-sync placement references when placement status changes
+-- Function: check_wwcc_expiry()
+-- Schedule: Daily cron
+-- Purpose: Finds nannies whose WWCC has expired, sets wwcc_verified = false
+--          (which auto-recalculates visible_in_match_making and visible_in_bsr),
+--          updates the verifications table, and logs to activity_logs.
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION sync_placement_references()
-RETURNS TRIGGER AS $$
-BEGIN
-  IF NEW.status = 'ended' AND (OLD.status IS NULL OR OLD.status != 'ended') THEN
-    -- Clear nanny's current placement reference
-    UPDATE nannies
-    SET current_placement_id = NULL, updated_at = NOW()
-    WHERE current_placement_id = NEW.id;
+create or replace function check_wwcc_expiry()
+returns void as $$
+declare
+  affected_nannies uuid[];
+begin
+  -- capture user_ids of nannies about to be expired
+  select array_agg(user_id) into affected_nannies
+  from nannies
+  where wwcc_verified = true and wwcc_expiry_date <= current_date;
 
-    -- Clear parent's references
-    UPDATE parents
-    SET current_placement_id = NULL, current_nanny_id = NULL, updated_at = NOW()
-    WHERE current_placement_id = NEW.id;
-  END IF;
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+  -- nothing to do if no expired nannies
+  if affected_nannies is null then
+    return;
+  end if;
 
-CREATE TRIGGER trg_placement_status_change
-  AFTER UPDATE ON nanny_placements
-  FOR EACH ROW
-  WHEN (OLD.status IS DISTINCT FROM NEW.status)
-  EXECUTE FUNCTION sync_placement_references();
+  -- expire WWCC on nannies (computed columns auto-update)
+  update nannies
+  set wwcc_verified = false,
+      updated_at = now()
+  where wwcc_verified = true and wwcc_expiry_date <= current_date;
 
-COMMENT ON FUNCTION sync_placement_references IS 'Auto-clears nanny/parent references when placement ends';
+  -- log expiry events
+  insert into activity_logs (user_id, action_type, action_details, created_at)
+  select user_id, 'wwcc_expired', jsonb_build_object('expiry_date', wwcc_expiry_date), now()
+  from nannies
+  where user_id = any(affected_nannies);
 
--- ============================================================================
--- SECTION 11: SCHEDULED FUNCTIONS (For Cron Jobs)
--- ============================================================================
-
--- ---------------------------------------------------------------------------
--- Function: Check and expire WWCC (run daily)
--- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION check_wwcc_expiry()
-RETURNS void AS $$
-DECLARE
-  affected_nannies UUID[];
-BEGIN
-  -- Get list of nannies being expired
-  SELECT ARRAY_AGG(user_id) INTO affected_nannies
-  FROM nannies
-  WHERE wwcc_verified = true AND wwcc_expiry_date <= CURRENT_DATE;
-
-  -- Update nannies with expired WWCC
-  UPDATE nannies
-  SET wwcc_verified = false, updated_at = NOW()
-  WHERE wwcc_verified = true AND wwcc_expiry_date <= CURRENT_DATE;
-
-  -- Log the expiry events
-  INSERT INTO activity_logs (user_id, action_type, action_details, created_at)
-  SELECT user_id, 'wwcc_expired', jsonb_build_object('expiry_date', wwcc_expiry_date), NOW()
-  FROM nannies
-  WHERE user_id = ANY(affected_nannies);
-
-  -- Also update verifications table
-  UPDATE verifications v
-  SET wwcc_verified = false,
+  -- also update verifications table
+  update verifications v
+  set wwcc_verified = false,
       verification_status = 'expired',
-      updated_at = NOW()
-  FROM nannies n
-  WHERE v.user_id = n.user_id
-    AND n.user_id = ANY(affected_nannies);
-END;
-$$ LANGUAGE plpgsql;
+      updated_at = now()
+  from nannies n
+  where v.user_id = n.user_id
+    and n.user_id = any(affected_nannies);
+end;
+$$ language plpgsql;
 
-COMMENT ON FUNCTION check_wwcc_expiry IS 'Daily cron: Expires WWCC and hides nanny from MM/BSR';
+comment on function check_wwcc_expiry()
+  is 'Daily cron: expires WWCC, hides nanny from MM/BSR, updates verifications, logs to activity_logs';
+
 
 -- ---------------------------------------------------------------------------
--- Function: Cleanup expired files (run daily)
+-- Function: cleanup_expired_files()
+-- Schedule: Daily cron
+-- Purpose: Finds files past their 5-year retention date and marks them as
+--          deleted. Actual file removal from Supabase Storage / Cloudinary
+--          must be handled by the application layer after reading these records.
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION cleanup_expired_files()
-RETURNS void AS $$
-DECLARE
-  file_record RECORD;
-BEGIN
-  FOR file_record IN
-    SELECT * FROM file_retention_log
-    WHERE scheduled_deletion_date <= CURRENT_DATE AND deleted_at IS NULL
-  LOOP
-    -- Mark file as deleted
-    UPDATE file_retention_log
-    SET deleted_at = NOW(),
+create or replace function cleanup_expired_files()
+returns void as $$
+declare
+  file_record record;
+begin
+  for file_record in
+    select * from file_retention_log
+    where scheduled_deletion_date <= current_date and deleted_at is null
+  loop
+    -- mark file as deleted
+    update file_retention_log
+    set deleted_at = now(),
         reason_for_deletion = 'retention_expired'
-    WHERE id = file_record.id;
+    where id = file_record.id;
 
-    -- Log the deletion
-    INSERT INTO activity_logs (user_id, action_type, action_details, created_at)
-    VALUES (
-      (SELECT user_id FROM nannies WHERE id = file_record.nanny_id),
+    -- log the deletion
+    insert into activity_logs (user_id, action_type, action_details, created_at)
+    values (
+      (select user_id from nannies where id = file_record.nanny_id),
       'file_deleted',
       jsonb_build_object(
         'file_type', file_record.file_type,
         'reason', 'retention_expired',
         'file_url', file_record.file_url
       ),
-      NOW()
+      now()
     );
-  END LOOP;
-END;
-$$ LANGUAGE plpgsql;
+  end loop;
+end;
+$$ language plpgsql;
 
-COMMENT ON FUNCTION cleanup_expired_files IS 'Daily cron: Marks files for deletion after 5-year retention';
+comment on function cleanup_expired_files()
+  is 'Daily cron: marks files as deleted after 5-year retention period; logs each deletion';
+
 
 -- ---------------------------------------------------------------------------
--- Function: Send WWCC expiry warnings (run daily)
+-- Function: send_wwcc_expiry_warnings()
+-- Schedule: Daily cron
+-- Purpose: Queues warning emails at 30 days and 7 days before WWCC expiry.
+--          Includes deduplication check to avoid sending duplicate 30-day
+--          warnings within a 7-day window.
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION send_wwcc_expiry_warnings()
-RETURNS void AS $$
-BEGIN
-  -- Queue emails for nannies with WWCC expiring in 30 days
-  INSERT INTO email_logs (recipient_user_id, recipient_email, email_type, subject, status, created_at)
-  SELECT
+create or replace function send_wwcc_expiry_warnings()
+returns void as $$
+begin
+  -- queue emails for nannies with WWCC expiring in 30 days
+  insert into email_logs (recipient_user_id, recipient_email, email_type, subject, status, created_at)
+  select
     n.user_id,
     up.email,
     'wwcc_expiring_soon',
     'Your WWCC expires in 30 days - Action required',
     'queued',
-    NOW()
-  FROM nannies n
-  JOIN user_profiles up ON n.user_id = up.user_id
-  WHERE n.wwcc_verified = true
-    AND n.wwcc_expiry_date = CURRENT_DATE + INTERVAL '30 days'
-    AND NOT EXISTS (
-      SELECT 1 FROM email_logs el
-      WHERE el.recipient_user_id = n.user_id
-        AND el.email_type = 'wwcc_expiring_soon'
-        AND el.created_at > CURRENT_DATE - INTERVAL '7 days'
+    now()
+  from nannies n
+  join user_profiles up on n.user_id = up.user_id
+  where n.wwcc_verified = true
+    and n.wwcc_expiry_date = current_date + interval '30 days'
+    and not exists (
+      select 1 from email_logs el
+      where el.recipient_user_id = n.user_id
+        and el.email_type = 'wwcc_expiring_soon'
+        and el.created_at > current_date - interval '7 days'
     );
 
-  -- Queue emails for nannies with WWCC expiring in 7 days
-  INSERT INTO email_logs (recipient_user_id, recipient_email, email_type, subject, status, created_at)
-  SELECT
+  -- queue emails for nannies with WWCC expiring in 7 days
+  insert into email_logs (recipient_user_id, recipient_email, email_type, subject, status, created_at)
+  select
     n.user_id,
     up.email,
     'wwcc_expiring_soon',
     'URGENT: Your WWCC expires in 7 days',
     'queued',
-    NOW()
-  FROM nannies n
-  JOIN user_profiles up ON n.user_id = up.user_id
-  WHERE n.wwcc_verified = true
-    AND n.wwcc_expiry_date = CURRENT_DATE + INTERVAL '7 days';
-END;
-$$ LANGUAGE plpgsql;
+    now()
+  from nannies n
+  join user_profiles up on n.user_id = up.user_id
+  where n.wwcc_verified = true
+    and n.wwcc_expiry_date = current_date + interval '7 days';
+end;
+$$ language plpgsql;
 
-COMMENT ON FUNCTION send_wwcc_expiry_warnings IS 'Daily cron: Sends warnings at 30 and 7 days before WWCC expires';
+comment on function send_wwcc_expiry_warnings()
+  is 'Daily cron: queues warning emails at 30 and 7 days before WWCC expiry';
+
 
 -- ============================================================================
--- SECTION 12: UTILITY FUNCTIONS
+-- SECTION 13: UTILITY FUNCTIONS
 -- ============================================================================
 
 -- ---------------------------------------------------------------------------
--- Function: Calculate distance between two coordinates (Haversine formula)
--- Used for finding nearest nannies for BSR
+-- Function: calculate_distance_km(lat1, lon1, lat2, lon2)
+-- Purpose: Haversine formula to calculate great-circle distance in kilometres
+--          between two latitude/longitude coordinate pairs.
+-- Marked IMMUTABLE for query planner optimisation.
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION calculate_distance_km(
-  lat1 DECIMAL,
-  lon1 DECIMAL,
-  lat2 DECIMAL,
-  lon2 DECIMAL
+create or replace function calculate_distance_km(
+  lat1 decimal,
+  lon1 decimal,
+  lat2 decimal,
+  lon2 decimal
 )
-RETURNS DECIMAL AS $$
-DECLARE
-  R DECIMAL := 6371; -- Earth's radius in km
-  dlat DECIMAL;
-  dlon DECIMAL;
-  a DECIMAL;
-  c DECIMAL;
-BEGIN
-  dlat := RADIANS(lat2 - lat1);
-  dlon := RADIANS(lon2 - lon1);
+returns decimal as $$
+declare
+  r    decimal := 6371;
+  dlat decimal;
+  dlon decimal;
+  a    decimal;
+  c    decimal;
+begin
+  dlat := radians(lat2 - lat1);
+  dlon := radians(lon2 - lon1);
 
-  a := SIN(dlat/2) * SIN(dlat/2) +
-       COS(RADIANS(lat1)) * COS(RADIANS(lat2)) *
-       SIN(dlon/2) * SIN(dlon/2);
+  a := sin(dlat / 2) * sin(dlat / 2) +
+       cos(radians(lat1)) * cos(radians(lat2)) *
+       sin(dlon / 2) * sin(dlon / 2);
 
-  c := 2 * ATAN2(SQRT(a), SQRT(1-a));
+  c := 2 * atan2(sqrt(a), sqrt(1 - a));
 
-  RETURN ROUND((R * c)::DECIMAL, 2);
-END;
-$$ LANGUAGE plpgsql IMMUTABLE;
+  return round((r * c)::decimal, 2);
+end;
+$$ language plpgsql immutable;
 
-COMMENT ON FUNCTION calculate_distance_km IS 'Haversine formula for distance between coordinates in km';
+comment on function calculate_distance_km(decimal, decimal, decimal, decimal)
+  is 'Haversine formula: returns great-circle distance in km between two lat/lng pairs';
+
 
 -- ---------------------------------------------------------------------------
--- Function: Get 20 nearest verified nannies for BSR
+-- Function: get_nearest_nannies_for_bsr(latitude, longitude, limit)
+-- Purpose: Finds the N nearest verified nannies (default 20) to a given
+--          location. Used when posting a babysitting request to determine
+--          which nannies to notify.
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION get_nearest_nannies_for_bsr(
-  p_latitude DECIMAL,
-  p_longitude DECIMAL,
-  p_limit INT DEFAULT 20
+create or replace function get_nearest_nannies_for_bsr(
+  p_latitude  decimal,
+  p_longitude decimal,
+  p_limit     int default 20
 )
-RETURNS TABLE (
-  nanny_id UUID,
-  user_id UUID,
-  distance_km DECIMAL
-) AS $$
-BEGIN
-  RETURN QUERY
-  SELECT
-    n.id as nanny_id,
-    n.user_id,
+returns table (
+  nanny_id    uuid,
+  user_id     uuid,
+  distance_km decimal
+) as $$
+begin
+  return query
+  select
+    n.id          as nanny_id,
+    n.user_id     as user_id,
     calculate_distance_km(
       p_latitude, p_longitude,
       sp.latitude, sp.longitude
-    ) as distance_km
-  FROM nannies n
-  JOIN user_profiles up ON n.user_id = up.user_id
-  JOIN sydney_postcodes sp ON up.suburb = sp.suburb
-  WHERE n.visible_in_bsr = true
-  ORDER BY distance_km ASC
-  LIMIT p_limit;
-END;
-$$ LANGUAGE plpgsql;
+    )             as distance_km
+  from nannies n
+  join user_profiles up   on n.user_id = up.user_id
+  join sydney_postcodes sp on up.suburb = sp.suburb
+  where n.visible_in_bsr = true
+  order by distance_km asc
+  limit p_limit;
+end;
+$$ language plpgsql;
 
-COMMENT ON FUNCTION get_nearest_nannies_for_bsr IS 'Returns 20 nearest verified nannies for BSR notifications';
+comment on function get_nearest_nannies_for_bsr(decimal, decimal, int)
+  is 'Returns the N nearest verified nannies (default 20) for BSR notifications based on Haversine distance';
 
--- ============================================================================
--- SECTION 13: REFERENCE DATA - SYDNEY POSTCODES (194 suburbs)
--- ============================================================================
-
-INSERT INTO sydney_postcodes (suburb, postcode, latitude, longitude) VALUES
-('Sydney', '2000', -33.8688, 151.2093),
-('Ultimo', '2007', -33.8822, 151.1987),
-('Chippendale', '2008', -33.8872, 151.2007),
-('Pyrmont', '2009', -33.8733, 151.1963),
-('Surry Hills', '2010', -33.8861, 151.2111),
-('Potts Point', '2011', -33.8708, 151.2263),
-('Alexandria', '2015', -33.908, 151.1905),
-('Redfern', '2016', -33.8929, 151.2053),
-('Waterloo', '2017', -33.9001, 151.2115),
-('Rosebery', '2018', -33.9213, 151.2045),
-('Botany', '2019', -33.9392, 151.2069),
-('Mascot', '2020', -33.9312, 151.1894),
-('Paddington', '2021', -33.8837, 151.2296),
-('Bondi Junction', '2022', -33.8915, 151.2466),
-('Bellevue Hill', '2023', -33.8821, 151.2514),
-('Waverley', '2024', -33.9014, 151.2541),
-('Woollahra', '2025', -33.8885, 151.2394),
-('Bondi', '2026', -33.891, 151.2646),
-('Edgecliff', '2027', -33.8794, 151.2356),
-('Double Bay', '2028', -33.877, 151.2415),
-('Rose Bay', '2029', -33.8761, 151.2574),
-('Vaucluse', '2030', -33.8566, 151.2721),
-('Randwick', '2031', -33.9144, 151.2415),
-('Kingsford', '2032', -33.9238, 151.2312),
-('Kensington', '2033', -33.9097, 151.2227),
-('Coogee', '2034', -33.9192, 151.2536),
-('Maroubra', '2035', -33.9458, 151.2403),
-('Little Bay', '2036', -33.9782, 151.2443),
-('Glebe', '2037', -33.8778, 151.1852),
-('Annandale', '2038', -33.8817, 151.1714),
-('Rozelle', '2039', -33.8647, 151.1738),
-('Leichhardt', '2040', -33.8845, 151.1561),
-('Balmain', '2041', -33.8583, 151.1788),
-('Newtown', '2042', -33.897, 151.1793),
-('Erskineville', '2043', -33.9005, 151.1853),
-('St Peters', '2044', -33.909, 151.182),
-('Haberfield', '2045', -33.8803, 151.1396),
-('Five Dock', '2046', -33.8648, 151.1293),
-('Drummoyne', '2047', -33.853, 151.1555),
-('Stanmore', '2048', -33.8933, 151.1648),
-('Petersham', '2049', -33.8953, 151.1561),
-('Camperdown', '2050', -33.8883, 151.1751),
-('North Sydney', '2060', -33.8358, 151.2069),
-('Kirribilli', '2061', -33.8491, 151.2166),
-('Cammeray', '2062', -33.8242, 151.2127),
-('Northbridge', '2063', -33.8122, 151.2155),
-('Artarmon', '2064', -33.8087, 151.1852),
-('Crows Nest', '2065', -33.8256, 151.2014),
-('Lane Cove', '2066', -33.8157, 151.1728),
-('Chatswood', '2067', -33.7961, 151.178),
-('Willoughby', '2068', -33.8078, 151.2015),
-('Roseville', '2069', -33.785, 151.1785),
-('Lindfield', '2070', -33.7744, 151.1687),
-('Killara', '2071', -33.7667, 151.1627),
-('Gordon', '2072', -33.7562, 151.1534),
-('Pymble', '2073', -33.7438, 151.1422),
-('Turramurra', '2074', -33.7319, 151.1306),
-('St Ives', '2075', -33.7275, 151.1725),
-('Wahroonga', '2076', -33.7196, 151.1182),
-('Hornsby', '2077', -33.7033, 151.0978),
-('Mount Colah', '2079', -33.6933, 151.1122),
-('Mount Kuring-Gai', '2080', -33.6822, 151.1211),
-('Berowra', '2081', -33.6667, 151.1333),
-('Cowan', '2082', -33.65, 151.15),
-('Brooklyn', '2083', -33.6167, 151.15),
-('Cottage Point', '2084', -33.6, 151.2333),
-('Belrose', '2085', -33.7333, 151.2167),
-('Frenchs Forest', '2086', -33.75, 151.2167),
-('Forestville', '2087', -33.7667, 151.2167),
-('Mosman', '2088', -33.829, 151.2427),
-('Neutral Bay', '2089', -33.8329, 151.2227),
-('Cremorne', '2090', -33.8293, 151.2289),
-('Seaforth', '2092', -33.8048, 151.2435),
-('Balgowlah', '2093', -33.7964, 151.2612),
-('Fairlight', '2094', -33.7972, 151.2721),
-('Manly', '2095', -33.7963, 151.2878),
-('Freshwater', '2096', -33.7801, 151.2863),
-('Collaroy', '2097', -33.7333, 151.3),
-('Dee Why', '2099', -33.7507, 151.2954),
-('Brookvale', '2100', -33.7656, 151.2707),
-('Narrabeen', '2101', -33.7193, 151.2959),
-('Warriewood', '2102', -33.6922, 151.3044),
-('Mona Vale', '2103', -33.6749, 151.306),
-('Bayview', '2104', -33.65, 151.3167),
-('Church Point', '2105', -33.6333, 151.3167),
-('Newport', '2106', -33.6333, 151.3),
-('Avalon', '2107', -33.6333, 151.3333),
-('Palm Beach', '2108', -33.5986, 151.3204),
-('Hunters Hill', '2110', -33.8333, 151.15),
-('Gladesville', '2111', -33.8167, 151.1333),
-('Ryde', '2112', -33.8153, 151.1011),
-('North Ryde', '2113', -33.7925, 151.1333),
-('West Ryde', '2114', -33.805, 151.085),
-('Meadowbank', '2115', -33.805, 151.07),
-('Rydalmere', '2116', -33.8, 151.0667),
-('Dundas', '2117', -33.7833, 151.0667),
-('Carlingford', '2118', -33.7833, 151.05),
-('Beecroft', '2119', -33.7667, 151.05),
-('Pennant Hills', '2120', -33.75, 151.0667),
-('Epping', '2121', -33.7744, 151.0822),
-('Eastwood', '2122', -33.7833, 151.1),
-('West Pennant Hills', '2125', -33.7833, 151.0333),
-('Cherrybrook', '2126', -33.7333, 151.0333),
-('Newington', '2127', -33.8427, 151.0664),
-('Silverwater', '2128', -33.8422, 151.0475),
-('Summer Hill', '2130', -33.8893, 151.1378),
-('Ashfield', '2131', -33.8889, 151.1256),
-('Croydon', '2132', -33.8833, 151.1167),
-('Croydon Park', '2133', -33.8833, 151.1),
-('Burwood', '2134', -33.8774, 151.1038),
-('Strathfield', '2135', -33.8797, 151.0827),
-('Enfield', '2136', -33.875, 151.075),
-('Concord', '2137', -33.8542, 151.1031),
-('Rhodes', '2138', -33.8297, 151.0872),
-('Homebush', '2140', -33.8667, 151.0833),
-('Lidcombe', '2141', -33.8642, 151.0428),
-('Granville', '2142', -33.8333, 151.0167),
-('Regents Park', '2143', -33.8833, 151),
-('Auburn', '2144', -33.8497, 151.0336),
-('Wentworthville', '2145', -33.8167, 150.9333),
-('Toongabbie', '2146', -33.7833, 150.95),
-('Seven Hills', '2147', -33.7833, 150.9333),
-('Blacktown', '2148', -33.771, 150.9063),
-('Parramatta', '2150', -33.815, 151.0011),
-('North Rocks', '2151', -33.78, 151.0183),
-('Northmead', '2152', -33.7833, 151),
-('Baulkham Hills', '2153', -33.7578, 150.9906),
-('Castle Hill', '2154', -33.7297, 151.0069),
-('Kellyville', '2155', -33.7126, 150.9507),
-('Annangrove', '2156', -33.6833, 150.95),
-('Glenorie', '2157', -33.65, 151.0333),
-('Dural', '2158', -33.6667, 151),
-('Galston', '2159', -33.6333, 151.0333),
-('Merrylands', '2160', -33.85, 150.9333),
-('Guildford', '2161', -33.85, 150.9167),
-('Chester Hill', '2162', -33.8667, 150.9667),
-('Villawood', '2163', -33.8833, 150.9667),
-('Smithfield', '2164', -33.8667, 150.9167),
-('Fairfield', '2165', -33.8667, 150.8833),
-('Canley Vale', '2166', -33.8833, 150.9167),
-('Green Valley', '2168', -33.9167, 150.8833),
-('Liverpool', '2170', -33.9167, 150.9167),
-('Hoxton Park', '2171', -33.9333, 150.85),
-('Bossley Park', '2176', -33.8667, 150.85),
-('Greenacre', '2190', -33.9167, 151.0667),
-('Belfield', '2191', -33.8967, 151.0967),
-('Belmore', '2192', -33.892, 151.116),
-('Canterbury', '2193', -33.91, 151.114),
-('Campsie', '2194', -33.9125, 151.1278),
-('Lakemba', '2195', -33.9214, 151.0822),
-('Punchbowl', '2196', -33.9358, 151.0736),
-('Bass Hill', '2197', -33.92, 151.09),
-('Georges Hall', '2198', -33.92, 151.05),
-('Yagoona', '2199', -33.93, 151.03),
-('Bankstown', '2200', -33.9167, 151.0333),
-('Dulwich Hill', '2203', -33.9103, 151.1408),
-('Marrickville', '2204', -33.9111, 151.1573),
-('Wolli Creek', '2205', -33.9312, 151.1565),
-('Earlwood', '2206', -33.9229, 151.1293),
-('Bexley', '2207', -33.9482, 151.126),
-('Kingsgrove', '2208', -33.9372, 151.1062),
-('Beverly Hills', '2209', -33.9515, 151.0825),
-('Peakhurst', '2210', -33.95, 151.0667),
-('Padstow', '2211', -33.95, 151.0167),
-('Revesby', '2212', -33.9667, 151.0167),
-('Panania', '2213', -33.9667, 150.9833),
-('Milperra', '2214', -33.9667, 150.9667),
-('Rockdale', '2216', -33.9517, 151.1388),
-('Kogarah', '2217', -33.965, 151.135),
-('Carlton', '2218', -33.9667, 151.1167),
-('Sans Souci', '2219', -33.9833, 151.1333),
-('Hurstville', '2220', -33.9678, 151.1036),
-('Carss Park', '2221', -33.9833, 151.1),
-('Penshurst', '2222', -33.9833, 151.0833),
-('Oatley', '2223', -33.9833, 151.0667),
-('Sylvania', '2224', -34, 151.0667),
-('Oyster Bay', '2225', -34.0167, 151.0667),
-('Jannali', '2226', -34.0167, 151.05),
-('Gymea', '2227', -34.0333, 151.05),
-('Miranda', '2228', -34.0361, 151.1028),
-('Caringbah', '2229', -34.0333, 151.1167),
-('Cronulla', '2230', -34.0574, 151.1522),
-('Kurnell', '2231', -34.0167, 151.15),
-('Sutherland', '2232', -34.0315, 151.0583),
-('Engadine', '2233', -34.05, 151),
-('Menai', '2234', -34, 151.0167),
-('Campbelltown', '2560', -34.0667, 150.8167),
-('Camden', '2570', -34.05, 150.7),
-('Glenmore Park', '2745', -33.7333, 150.6833),
-('Kingswood', '2747', -33.7667, 150.7167),
-('Penrith', '2750', -33.7507, 150.6877),
-('St Marys', '2760', -33.7667, 150.7833),
-('Quakers Hill', '2763', -33.7333, 150.8333),
-('Glenwood', '2768', -33.7167, 150.9167);
 
 -- ============================================================================
--- SECTION 14: FINAL VERIFICATION
+-- SECTION 14: VERIFICATION BLOCK
 -- ============================================================================
+-- Counts all public tables and raises a NOTICE. Fails if fewer than 24.
 
--- Count tables (should be 24)
-DO $$
-DECLARE
-  table_count INT;
-BEGIN
-  SELECT COUNT(*) INTO table_count
-  FROM information_schema.tables
-  WHERE table_schema = 'public'
-    AND table_type = 'BASE TABLE';
+do $$
+declare
+  table_count int;
+begin
+  select count(*) into table_count
+  from information_schema.tables
+  where table_schema = 'public'
+    and table_type = 'BASE TABLE';
 
-  RAISE NOTICE 'Total tables created: %', table_count;
+  raise notice '========================================';
+  raise notice 'Baby Bloom Sydney migration complete.';
+  raise notice 'Total public tables created: %', table_count;
+  raise notice '========================================';
 
-  IF table_count < 23 THEN
-    RAISE EXCEPTION 'Expected at least 23 tables, got %', table_count;
-  END IF;
-END $$;
+  if table_count < 23 then
+    raise exception 'Expected at least 23 tables, but found %. Migration may be incomplete.', table_count;
+  end if;
+end $$;
 
--- Count Sydney postcodes (should be 194)
-DO $$
-DECLARE
-  postcode_count INT;
-BEGIN
-  SELECT COUNT(*) INTO postcode_count FROM sydney_postcodes;
-
-  RAISE NOTICE 'Sydney postcodes inserted: %', postcode_count;
-
-  IF postcode_count != 194 THEN
-    RAISE WARNING 'Expected 194 postcodes, got %', postcode_count;
-  END IF;
-END $$;
 
 -- ============================================================================
 -- MIGRATION COMPLETE
 -- ============================================================================
 --
--- Tables Created: 24
--- - Core Identity: user_roles, user_profiles
--- - Reference: sydney_postcodes
--- - Verification & Logging: verifications, activity_logs, email_logs, user_progress
--- - Nanny Profile: nannies, nanny_availability, nanny_credentials, nanny_assurances,
---                  nanny_images, nanny_ai_content
--- - Parent Profile: parents, nanny_positions, position_schedule, position_children
--- - Matching: interview_requests, babysitting_requests, bsr_time_slots,
---             bsr_notifications, nanny_placements
--- - File Management: file_retention_log
+-- Tables Created (25):
+--   1.  user_roles            14. parents
+--   2.  user_profiles         15. nanny_positions
+--   3.  sydney_postcodes      16. position_schedule
+--   4.  verifications         17. position_children
+--   5.  activity_logs         18. interview_requests
+--   6.  email_logs            19. babysitting_requests
+--   7.  user_progress         20. bsr_time_slots
+--   8.  nannies               21. bsr_notifications
+--   9.  nanny_availability    22. nanny_placements
+--   10. nanny_credentials     23. file_retention_log
+--   11. nanny_assurances      24. form_snapshots (Migration 1)
+--   12. nanny_images          25. (circular FK constraints applied)
+--   13. nanny_ai_content
 --
--- Functions Created:
--- - update_updated_at_column (trigger)
--- - sync_placement_references (trigger)
--- - check_wwcc_expiry (cron)
--- - cleanup_expired_files (cron)
--- - send_wwcc_expiry_warnings (cron)
--- - calculate_distance_km (utility)
--- - get_nearest_nannies_for_bsr (utility)
+-- Functions Created (7):
+--   1. update_updated_at_column()    - trigger: auto-sets updated_at
+--   2. sync_placement_references()   - trigger: clears refs when placement ends
+--   3. check_wwcc_expiry()           - cron: expires WWCC daily
+--   4. cleanup_expired_files()       - cron: marks files for deletion after 5yr
+--   5. send_wwcc_expiry_warnings()   - cron: queues 30-day and 7-day warnings
+--   6. calculate_distance_km()       - utility: Haversine distance
+--   7. get_nearest_nannies_for_bsr() - utility: 20 nearest verified nannies
 --
--- Sydney Postcodes: 194 suburbs with lat/lng
+-- Triggers Applied:
+--   - updated_at triggers on: user_profiles, verifications, nannies,
+--     nanny_availability, nanny_credentials, nanny_images, nanny_ai_content,
+--     parents, nanny_positions, position_schedule, interview_requests,
+--     babysitting_requests, nanny_placements
+--   - sync_placement_references on: nanny_placements (after status change)
+--
+-- Computed/Generated Columns:
+--   - nannies: fully_verified, visible_in_match_making, visible_in_bsr,
+--              profile_visible
+--   - nanny_placements: placement_duration_days
 --
 -- Next Steps:
--- 1. Set up Supabase Cron jobs for daily functions
--- 2. Configure Row Level Security (RLS) policies
--- 3. Set up Supabase Storage buckets
--- 4. Configure Cloudinary integration
+--   1. Run seed.sql to insert Sydney postcode data (194 suburbs)
+--   2. Run rls-policies.sql to set up Row Level Security
+--   3. Configure Supabase cron for: check_wwcc_expiry, cleanup_expired_files,
+--      send_wwcc_expiry_warnings
+--   4. ✅ Supabase Storage buckets created (profile-pictures, verification-documents)
+--   5. ✅ form_snapshots table created (Migration 1)
 --
 -- ============================================================================

@@ -1,0 +1,249 @@
+"use client";
+
+import Link from "next/link";
+import { useAuth } from "@/contexts/AuthContext";
+import { SidebarItem } from "./SidebarItem";
+import { UserAvatar } from "@/components/dashboard/UserAvatar";
+import { Button } from "@/components/ui/button";
+import {
+  Home,
+  User,
+  ShieldCheck,
+  Calendar,
+  Briefcase,
+  Settings,
+  Search,
+  ClipboardList,
+  Baby,
+  Filter,
+  Users,
+  BarChart3,
+  LogOut,
+  BookOpen,
+  PlusCircle,
+  HelpCircle,
+  Eye,
+  LayoutDashboard,
+  MessageSquare,
+  LogIn,
+  UserPlus,
+} from "lucide-react";
+
+type UserRole = "nanny" | "parent" | "admin" | "super_admin" | "guest";
+
+interface SidebarProps {
+  role: UserRole;
+  collapsed?: boolean;
+  onToggle?: () => void;
+}
+
+const nannyNavItems = [
+  { href: "/nanny/dashboard", icon: Home, label: "Dashboard" },
+  { href: "/nanny/profile", icon: User, label: "My Profile" },
+  { href: "/nanny/team", icon: Users, label: "Our Team" },
+  { href: "/nanny/verification", icon: ShieldCheck, label: "Verification" },
+  { href: "/nanny/interviews", icon: Calendar, label: "Interview Requests" },
+  { href: "/nanny/babysitting", icon: Briefcase, label: "Babysitting Jobs" },
+  { href: "/nanny/settings", icon: Settings, label: "Settings" },
+];
+
+const parentNavItems = [
+  { href: "/parent/dashboard", icon: Home, label: "Dashboard" },
+  { href: "/parent/browse", icon: Search, label: "Browse Nannies" },
+  { href: "/parent/position", icon: ClipboardList, label: "My Position" },
+  { href: "/parent/request", icon: PlusCircle, label: "Nanny Request" },
+  { href: "/parent/interviews", icon: Calendar, label: "Interviews" },
+  { href: "/parent/babysitting", icon: Baby, label: "Babysitting" },
+  { href: "/parent/settings", icon: Settings, label: "Settings" },
+];
+
+const adminNavItems = [
+  { href: "/admin/dashboard", icon: Home, label: "Dashboard" },
+  { href: "/admin/pipeline", icon: Filter, label: "User Pipeline" },
+  { href: "/admin/users", icon: Users, label: "User Management" },
+  { href: "/admin/verification-reference", icon: BookOpen, label: "Verification Ref" },
+  { href: "/admin/analytics", icon: BarChart3, label: "Analytics" },
+  { href: "/admin/settings", icon: Settings, label: "Settings" },
+];
+
+const guestPublicItems = [
+  { href: "/", icon: Home, label: "Home" },
+  { href: "/nannies", icon: Search, label: "Browse Nannies" },
+  { href: "/about", icon: HelpCircle, label: "About" },
+  { href: "/how-it-works", icon: Eye, label: "How It Works" },
+];
+
+const guestProtectedItems = [
+  { href: "/signup", icon: LayoutDashboard, label: "Dashboard" },
+  { href: "/signup", icon: MessageSquare, label: "Interviews" },
+  { href: "/signup", icon: Baby, label: "Babysitting" },
+  { href: "/signup", icon: ClipboardList, label: "My Position" },
+  { href: "/signup", icon: Settings, label: "Settings" },
+];
+
+const navItemsByRole: Record<UserRole, typeof nannyNavItems> = {
+  nanny: nannyNavItems,
+  parent: parentNavItems,
+  admin: adminNavItems,
+  super_admin: adminNavItems,
+  guest: guestPublicItems,
+};
+
+export function Sidebar({ role, collapsed, onToggle }: SidebarProps) {
+  const isGuest = role === "guest";
+  const { profile, signOut } = useAuth();
+  const navItems = navItemsByRole[role] || [];
+
+  const fullName = profile
+    ? `${profile.first_name || ""} ${profile.last_name || ""}`.trim()
+    : "";
+  const firstName = profile?.first_name || "User";
+
+  return (
+    <aside className={`flex h-full flex-col border-r bg-white transition-all duration-200 ${collapsed ? "w-16" : "w-64"}`}>
+      {/* Logo — click to toggle collapse */}
+      <button
+        onClick={onToggle}
+        className="flex h-16 items-center border-b px-4 hover:bg-slate-50 transition-colors cursor-pointer w-full"
+      >
+        {collapsed ? (
+          <div className="flex w-full items-center justify-center">
+            <Baby className="h-7 w-7 text-violet-500" />
+          </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <Baby className="h-7 w-7 text-violet-500 flex-shrink-0" />
+            <span className="text-xl font-bold">
+              <span className="text-slate-900">Baby</span>
+              <span className="text-violet-500">Bloom</span>
+            </span>
+          </div>
+        )}
+      </button>
+
+      {/* Navigation */}
+      <nav className={`flex-1 space-y-1 py-4 ${collapsed ? "px-2" : "px-3"}`}>
+        {navItems.map((item) => (
+          <SidebarItem
+            key={item.href + item.label}
+            href={item.href}
+            icon={item.icon}
+            label={item.label}
+            collapsed={collapsed}
+          />
+        ))}
+
+        {/* Guest: protected items that redirect to signup */}
+        {isGuest && !collapsed && (
+          <>
+            <div className="my-3 border-t border-slate-200" />
+            <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+              Sign up to access
+            </p>
+            {guestProtectedItems.map((item) => (
+              <SidebarItem
+                key={item.label}
+                href={item.href}
+                icon={item.icon}
+                label={item.label}
+                collapsed={collapsed}
+              />
+            ))}
+          </>
+        )}
+        {isGuest && collapsed && (
+          <>
+            <div className="my-3 border-t border-slate-200" />
+            {guestProtectedItems.map((item) => (
+              <SidebarItem
+                key={item.label}
+                href={item.href}
+                icon={item.icon}
+                label={item.label}
+                collapsed={collapsed}
+              />
+            ))}
+          </>
+        )}
+      </nav>
+
+      {/* Bottom Section */}
+      {isGuest ? (
+        <div className={`border-t p-4 ${collapsed ? "space-y-1" : "space-y-2"}`}>
+          {collapsed ? (
+            <>
+              <Button asChild variant="outline" size="icon" className="w-full">
+                <Link href="/login">
+                  <LogIn className="h-4 w-4" />
+                </Link>
+              </Button>
+              <Button asChild size="icon" className="w-full bg-violet-500 hover:bg-violet-600">
+                <Link href="/signup">
+                  <UserPlus className="h-4 w-4" />
+                </Link>
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button asChild variant="outline" className="w-full">
+                <Link href="/login">
+                  <LogIn className="mr-2 h-4 w-4" />
+                  Log in
+                </Link>
+              </Button>
+              <Button asChild className="w-full bg-violet-500 hover:bg-violet-600">
+                <Link href="/signup">
+                  <UserPlus className="mr-2 h-4 w-4" />
+                  Sign Up
+                </Link>
+              </Button>
+            </>
+          )}
+        </div>
+      ) : (
+        <div className="border-t p-4">
+          {collapsed ? (
+            <div className="flex flex-col items-center gap-2">
+              <UserAvatar
+                name={fullName || firstName}
+                imageUrl={profile?.profile_picture_url || undefined}
+                className="h-8 w-8"
+              />
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={signOut}
+                className="h-8 w-8 text-slate-400 hover:text-slate-600"
+              >
+                <LogOut className="h-4 w-4" />
+                <span className="sr-only">Sign out</span>
+              </Button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-3">
+              <UserAvatar
+                name={fullName || firstName}
+                imageUrl={profile?.profile_picture_url || undefined}
+              />
+              <div className="flex-1 overflow-hidden">
+                <p className="truncate text-sm font-medium text-slate-900">
+                  {firstName}
+                </p>
+                <p className="truncate text-xs text-slate-500 capitalize">{role}</p>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={signOut}
+                className="h-8 w-8 text-slate-400 hover:text-slate-600"
+              >
+                <LogOut className="h-4 w-4" />
+                <span className="sr-only">Sign out</span>
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
+    </aside>
+  );
+}

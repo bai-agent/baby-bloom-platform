@@ -1,0 +1,264 @@
+"use client";
+
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet";
+import { UserAvatar } from "@/components/dashboard/UserAvatar";
+import { StatusBadge } from "@/components/dashboard/StatusBadge";
+import { Card, CardContent } from "@/components/ui/card";
+import { LEVEL_LABELS, STATUS_LABELS } from "@/lib/verification";
+import { CheckCircle2, Clock, XCircle, MapPin, Mail, Phone, Calendar, Shield, Baby } from "lucide-react";
+import type { UserData } from "./page";
+
+interface UserDetailDrawerProps {
+  user: UserData | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}
+
+function getLevelVariant(level: number | null): "inactive" | "pending" | "active" | "verified" {
+  if (level === null) return "inactive";
+  if (level === 0) return "inactive";
+  if (level <= 2) return "pending";
+  if (level === 3) return "active";
+  return "verified";
+}
+
+function getStatusVariant(status: number | null): "unattempted" | "pending" | "failed" | "verified" | "active" {
+  if (status === null) return "unattempted";
+  if (status === 0) return "unattempted";
+  if (status === 12 || status === 22 || status === 23 || status === 26 || status === 27 || status === 28) return "failed";
+  if (status === 30) return "active";
+  if (status === 40) return "verified";
+  return "pending";
+}
+
+export function UserDetailDrawer({ user, open, onOpenChange }: UserDetailDrawerProps) {
+  if (!user) return null;
+
+  const name = `${user.first_name || ""} ${user.last_name || ""}`.trim() || "Unknown";
+  const level = user.verification_level;
+  const status = user.verification_status;
+
+  function formatDate(dateStr: string | null): string {
+    if (!dateStr) return "-";
+    return new Date(dateStr).toLocaleDateString("en-AU", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+  }
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="right" className="sm:max-w-md overflow-y-auto">
+        <SheetHeader>
+          <SheetTitle>{name}</SheetTitle>
+          <SheetDescription>{user.email}</SheetDescription>
+        </SheetHeader>
+
+        <div className="mt-6 space-y-6">
+          {/* Profile Header */}
+          <div className="flex items-center gap-4">
+            <UserAvatar
+              name={name}
+              imageUrl={user.profile_picture_url || undefined}
+              className="h-16 w-16"
+            />
+            <div>
+              <p className="text-lg font-semibold">{name}</p>
+              <p className="capitalize text-sm text-slate-500">{user.role.replace("_", " ")}</p>
+              {user.role === "nanny" && (
+                <div className="mt-1">
+                  <StatusBadge variant={getLevelVariant(level)}>
+                    {LEVEL_LABELS[level ?? 0] || `Unknown (${level})`}
+                  </StatusBadge>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Personal Info */}
+          <Card>
+            <CardContent className="p-4 space-y-3">
+              <h3 className="text-sm font-semibold text-slate-700">Personal Information</h3>
+
+              <div className="space-y-2 text-sm">
+                <div className="flex items-center gap-2 text-slate-600">
+                  <Mail className="h-3.5 w-3.5 text-slate-400" />
+                  <span>{user.email || "-"}</span>
+                </div>
+                <div className="flex items-center gap-2 text-slate-600">
+                  <Phone className="h-3.5 w-3.5 text-slate-400" />
+                  <span>{user.mobile_number || "-"}</span>
+                </div>
+                <div className="flex items-center gap-2 text-slate-600">
+                  <Calendar className="h-3.5 w-3.5 text-slate-400" />
+                  <span>DOB: {formatDate(user.date_of_birth)}</span>
+                </div>
+                <div className="flex items-center gap-2 text-slate-600">
+                  <MapPin className="h-3.5 w-3.5 text-slate-400" />
+                  <span>
+                    {user.suburb
+                      ? `${user.suburb}${user.postcode ? ` (${user.postcode})` : ""}`
+                      : "-"}
+                  </span>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Role & Status */}
+          <Card>
+            <CardContent className="p-4 space-y-3">
+              <h3 className="text-sm font-semibold text-slate-700">Role & Status</h3>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-slate-500">Role</span>
+                  <span className="capitalize font-medium">{user.role.replace("_", " ")}</span>
+                </div>
+                {user.role === "nanny" && (
+                  <>
+                    <div className="flex items-center justify-between text-sm">
+                      <span className="text-slate-500">Babysitter</span>
+                      {user.babysitter_eligible ? (
+                        <span className="flex items-center gap-1 text-green-600 font-medium">
+                          <Baby className="h-3.5 w-3.5" /> Yes
+                        </span>
+                      ) : (
+                        <span className="text-slate-400">No</span>
+                      )}
+                    </div>
+                  </>
+                )}
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-slate-500">Joined</span>
+                  <span>{formatDate(user.created_at)}</span>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Verification Summary (nannies only) */}
+          {user.role === "nanny" && (
+            <Card>
+              <CardContent className="p-4 space-y-3">
+                <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+                  <Shield className="h-4 w-4 text-violet-500" />
+                  Verification
+                </h3>
+
+                {/* Level */}
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-slate-500">Level</span>
+                  <StatusBadge variant={getLevelVariant(level)}>
+                    {LEVEL_LABELS[level ?? 0] || `Unknown (${level})`}
+                  </StatusBadge>
+                </div>
+
+                {/* Status */}
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-slate-500">Status</span>
+                  <StatusBadge variant={getStatusVariant(status)}>
+                    {STATUS_LABELS[status ?? 0] || `Unknown (${status})`}
+                  </StatusBadge>
+                </div>
+
+                <hr className="border-slate-100" />
+
+                {/* ID + WWCC breakdown */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-slate-500">Identity (Passport)</span>
+                    {user.identity_verified ? (
+                      <span className="flex items-center gap-1 text-green-600">
+                        <CheckCircle2 className="h-3.5 w-3.5" /> Verified
+                      </span>
+                    ) : status !== null && status >= 10 && status < 20 ? (
+                      status === 12 ? (
+                        <span className="flex items-center gap-1 text-red-600">
+                          <XCircle className="h-3.5 w-3.5" /> Rejected
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1 text-yellow-600">
+                          <Clock className="h-3.5 w-3.5" /> Pending
+                        </span>
+                      )
+                    ) : (
+                      <span className="text-slate-400">Not started</span>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-slate-500">WWCC</span>
+                    {user.wwcc_verified ? (
+                      <span className="flex items-center gap-1 text-green-600">
+                        <CheckCircle2 className="h-3.5 w-3.5" /> Verified
+                      </span>
+                    ) : status !== null && status >= 20 && status < 40 ? (
+                      status === 22 && user.nanny_status === 'suspended' ? (
+                        <span className="flex items-center gap-1 text-red-700 font-semibold">
+                          <XCircle className="h-3.5 w-3.5" /> BARRED
+                        </span>
+                      ) : status === 22 ? (
+                        <span className="flex items-center gap-1 text-red-600">
+                          <XCircle className="h-3.5 w-3.5" /> Rejected
+                        </span>
+                      ) : status === 23 ? (
+                        <span className="flex items-center gap-1 text-red-600">
+                          <XCircle className="h-3.5 w-3.5" /> Expired
+                        </span>
+                      ) : status === 26 ? (
+                        <span className="flex items-center gap-1 text-red-600">
+                          <XCircle className="h-3.5 w-3.5" /> OCG Not Found
+                        </span>
+                      ) : status === 27 ? (
+                        <span className="flex items-center gap-1 text-red-600">
+                          <XCircle className="h-3.5 w-3.5" /> Closed
+                        </span>
+                      ) : status === 28 ? (
+                        <span className="flex items-center gap-1 text-amber-600">
+                          <Clock className="h-3.5 w-3.5" /> Application Pending
+                        </span>
+                      ) : status === 30 ? (
+                        <span className="flex items-center gap-1 text-yellow-600">
+                          <Clock className="h-3.5 w-3.5" /> Provisional
+                        </span>
+                      ) : (
+                        <span className="flex items-center gap-1 text-yellow-600">
+                          <Clock className="h-3.5 w-3.5" /> Pending
+                        </span>
+                      )
+                    ) : (
+                      <span className="text-slate-400">Not started</span>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Activity (placeholder) */}
+          <Card>
+            <CardContent className="p-4">
+              <h3 className="text-sm font-semibold text-slate-700">Activity</h3>
+              <p className="mt-2 text-sm text-slate-400 italic">Coming soon</p>
+            </CardContent>
+          </Card>
+
+          {/* Admin Notes (placeholder) */}
+          <Card>
+            <CardContent className="p-4">
+              <h3 className="text-sm font-semibold text-slate-700">Admin Notes</h3>
+              <p className="mt-2 text-sm text-slate-400 italic">Coming soon</p>
+            </CardContent>
+          </Card>
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}

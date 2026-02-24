@@ -1,18 +1,99 @@
 # CLAUDE.md - Baby Bloom Sydney
 
+## Efficiency Rules (READ FIRST — ALL AGENTS MUST FOLLOW)
+
+### Context Loading Rules
+Every task: Read CLAUDE.md + build-progress.md. Stop there unless task requires more.
+
+**Bug fix:** Read ONLY the broken file. Check build-progress.md Known Bugs first.
+
+**New page/component:** Read build-progress.md Component Registry + the closest existing page as reference. Do not read unrelated pages.
+
+**Styling change:** Read ONLY the file being styled. No other files.
+
+**Auth/middleware change:** Read src/lib/auth/actions.ts + src/lib/supabase/middleware.ts + src/middleware.ts. Nothing else.
+
+**Database change:** Read docs/04-technical/database/schema.md. Nothing else from docs/.
+
+**API/backend logic:** Read the relevant route file + schema.md if querying DB.
+
+**Business logic features** (verification, matching, tiers): Also read docs/07-business-rules/.
+
+**Do NOT read unless explicitly needed:**
+- baby-bloom-master-blueprint.md
+- baby-bloom-architecture-roadmap.md
+- project-roles-and-workflow.md
+- relationships.md
+- best-practices-analysis.md
+- Any file in docs/01-business/ or docs/02-users/
+- Any file in planning/
+
+**After completing any task:** Update build-progress.md with files created/modified.
+
+### Response Style:
+- Don't explain what you're about to do — just do it
+- Don't repeat file contents back after editing — just confirm the file path and what changed
+- Don't narrate your thought process — execute, then give a brief summary
+- When fixing bugs, make the minimal change needed. Don't refactor surrounding code
+
+### Agent Strategy
+Classify every task before starting. Do not deliberate — pick one and go.
+
+**Small** (1-5 files OR any bug fix):
+→ Sequential. No agents. No exceptions.
+
+**Large** (6+ new independent files):
+→ Spawn 2-3 Sonnet agents. Never Opus agents.
+→ No agent touches a file another agent touches.
+→ Each agent reads CLAUDE.md + build-progress.md + only their files.
+→ Max 3 agents. Never more.
+→ Before spawning, verify enough context window remains for all agents to complete. If unsure, go sequential.
+
+**Always sequential regardless of size:**
+- Bug fixes
+- Refactoring
+- Anything touching shared files (auth, layouts, utilities, types)
+- Any task where step order matters
+- Database changes
+
+**Agent failure recovery:**
+If any agent fails or creates a conflict, stop all agents. Continue sequentially from the last working state.
+
+### Dependency Awareness:
+- Before creating any new component, check the Component Registry in build-progress.md
+- Before installing any package, check if it's already in package.json
+- Before creating utility functions, check src/lib/ for existing ones
+- Don't create duplicate files — check first
+
+### Compaction Protocol:
+- Monitor context usage throughout the session
+- Compact proactively at logical breakpoints — after completing each major task, not mid-task
+- BEFORE every compact, update ALL of:
+  - This CLAUDE.md (if project state changed — new phase, new decisions)
+  - docs/04-technical/build-progress.md with:
+    - Files created (full paths)
+    - Files modified (full paths + what changed)
+    - Current bugs/issues
+    - Updated component registry
+    - Exact next task to pick up
+- Never compact mid-task. Finish the current logical unit first
+- The build-progress.md file must always reflect the true current state so any new context window can resume perfectly
+
+---
+
 ## Project Overview
 Baby Bloom Sydney is a nanny matching platform for Sydney, Australia. We're rebuilding it from a manual Wix + Google Sheets system into a modern automated web app with AI-powered features.
 
-**Tech Stack:** Next.js 14 (App Router), Supabase (PostgreSQL + Auth + Storage), Anthropic Claude API, Cloudinary (images), Vercel (hosting)
+**Tech Stack:** Next.js 14 (App Router), Supabase (PostgreSQL + Auth + Storage), OpenAI API (GPT-4o), Cloudinary (images), Vercel (hosting)
 
 ---
 
 ## Architecture Summary
 
-### Database: 24 Tables across 6 domains
+### Database: 23 Tables across 6 domains (DEPLOYED to Supabase)
 
-**Core Identity (3 tables):**
-- `users` - Supabase Auth managed
+**Core Identity (2 tables + auth.users):**
+- `auth.users` - Supabase Auth managed (not in public schema)
 - `user_roles` - nanny, parent, admin
 - `user_profiles` - shared data (name, email, location, profile pic)
 
@@ -39,7 +120,7 @@ Baby Bloom Sydney is a nanny matching platform for Sydney, Australia. We're rebu
 - `nanny_placements` - hired nanny tracking (permanent record)
 
 **Reference & Logs (5 tables):**
-- `sydney_postcodes` - 194 suburbs with lat/lng for geolocation
+- `sydney_postcodes` - 194 suburbs with lat/lng for geolocation (SEEDED)
 - `activity_logs` - complete audit trail
 - `email_logs` - all system emails
 - `user_progress` - funnel tracking
@@ -84,6 +165,7 @@ Baby Bloom Sydney is a nanny matching platform for Sydney, Australia. We're rebu
 - GIN indexes on JSONB columns (availability schedules)
 - Foreign key cascades for referential integrity
 - `updated_at` auto-update triggers on every table
+- `placement_duration_days` computed only when ended (NULL while active - PG17 immutability requirement)
 
 ---
 
@@ -101,6 +183,7 @@ Monitor signups → Review/override AI verifications → Handle disputes → Tra
 ---
 
 ## AI Integration Points
+- **Provider:** OpenAI API (GPT-4o) — client at `app/src/lib/ai/client.ts`
 - **Content generation:** Nanny bios (from 40-field form), Facebook posts (viral growth), interview emails
 - **Verification:** Passport photo matching, WWCC document parsing, Facebook screenshot validation
 - **Coordination:** Email sequencing (request → accept → confirm → remind), calendar invite generation
@@ -111,40 +194,85 @@ Monitor signups → Review/override AI verifications → Handle disputes → Tra
 
 ```
 ~/Desktop/BB/nanny-platform/
+├── app/                              ← Next.js application
+│   ├── src/
+│   │   ├── app/
+│   │   │   ├── (public)/             ← Public pages: landing, browse, about
+│   │   │   ├── (auth)/               ← Auth pages: login, signup, forgot-password
+│   │   │   ├── nanny/                ← Nanny dashboard (6 pages)
+│   │   │   ├── parent/               ← Parent dashboard (6 pages)
+│   │   │   ├── admin/                ← Admin dashboard (6 pages, real data)
+│   │   │   └── api/                  ← API routes
+│   │   ├── components/
+│   │   │   ├── ui/                   ← shadcn/ui components
+│   │   │   ├── layout/               ← Navbar, Footer, Sidebar, etc.
+│   │   │   ├── dashboard/            ← StatsCard, StatusBadge, etc.
+│   │   │   └── providers/            ← SessionProvider
+│   │   ├── contexts/                 ← AuthContext
+│   │   ├── lib/
+│   │   │   ├── supabase/             ← Client, server, middleware
+│   │   │   ├── auth/                 ← Types, roles, actions
+│   │   │   └── ai/                   ← OpenAI client
+│   │   └── middleware.ts             ← Route protection
+│   └── .env.local                    ← Environment variables
 ├── docs/
-│   ├── 01-business/          ← business model, revenue (COMPLETE)
-│   ├── 02-users/             ← user journeys, permissions (COMPLETE)
+│   ├── 01-business/                  ← business model, revenue (COMPLETE)
+│   ├── 02-users/                     ← user journeys, permissions (COMPLETE)
 │   ├── 04-technical/
-│   │   ├── database/         ← schema.md, relationships.md (COMPLETE), SQL + RLS (TODO)
-│   │   ├── api/              ← Phase 2 (TODO)
-│   │   └── frontend/         ← Phase 3 (TODO)
-│   ├── 05-ai-integration/    ← AI overview
-│   └── 07-business-rules/    ← verification, access control, matching rules (COMPLETE)
-└── planning/                 ← roadmap, blueprint, roles doc
+│   │   ├── database/                 ← schema.md, supabase-setup.sql, rls-policies.sql (ALL DEPLOYED)
+│   │   ├── build-progress.md         ← Session tracking (ACTIVE — agents must update this)
+│   │   ├── prompt-templates.md       ← Reusable Claude Code prompts
+│   │   └── api/                      ← API docs (TODO)
+│   ├── 05-ai-integration/            ← AI overview (TODO)
+│   └── 07-business-rules/            ← verification, access control, matching rules (COMPLETE)
+└── planning/                         ← roadmap, blueprint, roles doc
 ```
+
+---
+
+## Database Deployment Status
+
+### Supabase Project
+- **Project Ref:** umkqevipzmoovyrnynrf
+- **Region:** ap-northeast-1 (Tokyo)
+- **PostgreSQL:** 17.6
+- **Pooler:** aws-1-ap-northeast-1.pooler.supabase.com:5432
+
+### Deployed Files (in order):
+1. `supabase-setup.sql` — 23 tables, 7 functions, triggers, indexes, constraints (235 commands)
+2. `rls-policies.sql` — RLS enabled on all 23 tables, helper functions, protection triggers, granular policies (253 commands)
+3. `seed.sql` — 194 Sydney postcodes seeded (test user data requires auth users to be created first)
+
+### Deployment Fixes Applied:
+- `placement_duration_days` generated column: removed `now()` (not immutable in PG17), computes only when `ended_at` is set
+- Verification block table count: corrected from 24 to 23 (auth.users is in auth schema, not public)
 
 ---
 
 ## Current Progress
 - **Phase 0:** Business Foundation ✅ COMPLETE
-- **Phase 1:** Database Schema ✅ COMPLETE (schema.md, relationships.md, supabase-setup.sql, rls-policies.md)
-- **Phase 2:** API Endpoints — NOT STARTED
-- **Phase 3:** Frontend Structure — NOT STARTED
-- **Phase 4:** Build Sequence — NOT STARTED
-- **Phase 5:** Implementation — NOT STARTED
+- **Phase 1:** Database Schema ✅ COMPLETE — designed, documented, and DEPLOYED to Supabase
+- **Phase 2:** Webapp Shell ✅ COMPLETE — layouts, auth, admin dashboard
+  - Public pages: Landing, browse nannies, about ✅
+  - Auth system: Signup (role-based), login, forgot/reset password ✅
+  - Route protection middleware (role-based) ✅
+  - Dashboard layouts for nanny, parent, admin ✅
+  - Admin dashboard with REAL Supabase data ✅
+  - Design: Violet (#8B5CF6), shadcn/ui components ✅
+- **Phase 3:** Core Features ✅ COMPLETE
+  - Signup bug fixed (admin client bypasses RLS) ✅
+  - Nanny profile form (8-section, ~40 fields) ✅
+  - Browse nannies with real data ✅
+  - Parent position creation (7-section form) ✅
+  - Interview request flow (create/accept/decline/cancel) ✅
+- **Phase 4:** AI Integration — NOT STARTED
+- **Phase 5:** Polish & Deploy — NOT STARTED
 
----
-
-## Important Context for Agents
-- All existing documentation is in `~/Desktop/BB/nanny-platform/docs/`
-- Read `docs/04-technical/database/schema.md` for complete table definitions
-- Read `docs/04-technical/database/relationships.md` for entity relationships
-- Read `docs/04-technical/database/supabase-setup.sql` for the complete migration script
-- Read `docs/04-technical/database/rls-policies.md` for Row Level Security policies
-- The postcodes CSV has 194 Sydney suburbs with lat/lng — already loaded in SQL migration
-- Storage: Cloudinary for images, Supabase Storage for documents (WWCC, passports)
-- Row Level Security (RLS) is defined for every table in rls-policies.md
-- Supabase Auth manages the `users` table — we don't create it manually
+**Next priorities:**
+- Verification upload flow (WWCC + Passport)
+- Nanny detail page (full profile view for parents)
+- Babysitting request flow
+- Email notifications
 
 ---
 
@@ -155,3 +283,6 @@ Monitor signups → Review/override AI verifications → Handle disputes → Tra
 - All tables get: `id UUID PRIMARY KEY DEFAULT gen_random_uuid()`, `created_at TIMESTAMPTZ DEFAULT NOW()`, `updated_at TIMESTAMPTZ DEFAULT NOW()`
 - Use `REFERENCES` with `ON DELETE` clauses for all foreign keys
 - Comment all tables and complex columns in SQL
+- TypeScript strict mode
+- React Server Components by default, 'use client' only when needed
+- shadcn/ui for all UI components — check Component Registry before creating custom ones

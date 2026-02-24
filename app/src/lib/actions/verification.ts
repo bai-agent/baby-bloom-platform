@@ -3,9 +3,30 @@
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { revalidatePath } from 'next/cache';
-import { VERIFICATION_STATUS } from '@/lib/verification';
+import {
+  IDENTITY_STATUS,
+  WWCC_STATUS,
+  CONTACT_STATUS,
+  CROSS_CHECK_STATUS,
+  VERIFICATION_LEVEL,
+  deriveOverallStatus,
+  type IdentityStatus,
+  type WwccStatus,
+  type CrossCheckStatus,
+  type UserGuidance,
+} from '@/lib/verification';
+import { runCrossCheckPhase } from '@/lib/ai/verification-pipeline';
 
-// ── Step 1: Identity ──
+// ── Shared auth helper ──
+
+async function getAuthUser() {
+  const supabase = createClient();
+  const { data: { user }, error } = await supabase.auth.getUser();
+  if (error || !user) return null;
+  return user;
+}
+
+// ── Submit Identity Section ──
 
 interface SubmitIdentityData {
   surname: string;
@@ -16,172 +37,329 @@ interface SubmitIdentityData {
   identification_photo_url: string;
 }
 
-export async function submitIdentityStep(
+export async function submitIdentitySection(
   data: SubmitIdentityData
 ): Promise<{ success: boolean; error: string | null; verificationId?: string }> {
-  const supabase = createClient();
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
-  if (authError || !user) {
+  console.log('[submitIdentitySection] Starting...');
+  const user = await getAuthUser();
+  if (!user) {
+    console.error('[submitIdentitySection] Not authenticated');
     return { success: false, error: 'Not authenticated' };
   }
+  console.log('[submitIdentitySection] Auth OK, user:', user.id);
 
   if (!data.surname?.trim() || !data.given_names?.trim() || !data.date_of_birth || !data.passport_country) {
     return { success: false, error: 'Missing required identity fields' };
   }
   if (!data.passport_upload_url || !data.identification_photo_url) {
-    return { success: false, error: 'Missing required document uploads' };
+    return { success: false, error: 'Missing document uploads' };
   }
 
-  const adminClient = createAdminClient();
+  const admin = createAdminClient();
 
-  const { data: verification, error: upsertErr } = await adminClient
+  // Check for existing record
+  const { data: existing, error: existingErr } = await admin
     .from('verifications')
-    .upsert({
-      user_id: user.id,
-      surname: data.surname.trim(),
-      given_names: data.given_names.trim(),
-      date_of_birth: data.date_of_birth,
-      passport_country: data.passport_country,
-      passport_upload_url: data.passport_upload_url,
-      identification_photo_url: data.identification_photo_url,
-      verification_status: VERIFICATION_STATUS.PENDING_ID_AUTO,
-      // Clear previous identity AI data on resubmission
-      identity_rejection_reason: null,
-      identity_verified: false,
-      extracted_surname: null,
-      extracted_given_names: null,
-      extracted_dob: null,
-      extracted_nationality: null,
-      extracted_passport_number: null,
-      extracted_passport_expiry: null,
-      identity_ai_reasoning: null,
-      identity_ai_issues: null,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'user_id' })
     .select('id')
+    .eq('user_id', user.id)
     .single();
+  console.log('[submitIdentitySection] Existing check:', existing ? 'found' : 'not found', existingErr?.code);
 
-  if (upsertErr || !verification) {
-    console.error('[submitIdentityStep] Upsert failed:', upsertErr);
-    return { success: false, error: 'Failed to save verification record' };
+  const identityFields = {
+    user_id: user.id,
+    surname: data.surname.trim(),
+    given_names: data.given_names.trim(),
+    date_of_birth: data.date_of_birth,
+    passport_country: data.passport_country,
+    passport_upload_url: data.passport_upload_url,
+    identification_photo_url: data.identification_photo_url,
+    // Status
+    identity_status: IDENTITY_STATUS.PENDING,
+    identity_status_at: new Date().toISOString(),
+    identity_verified: false,
+    // Clear old AI data
+    extracted_surname: null,
+    extracted_given_names: null,
+    extracted_dob: null,
+    extracted_nationality: null,
+    extracted_passport_number: null,
+    extracted_passport_expiry: null,
+    identity_ai_reasoning: null,
+    identity_ai_issues: null,
+    identity_rejection_reason: null,
+    identity_user_guidance: null,
+    // Reset cross-check (must re-run after identity resubmission)
+    cross_check_status: CROSS_CHECK_STATUS.NOT_STARTED,
+    cross_check_reasoning: null,
+    cross_check_issues: null,
+    cross_check_at: null,
+    updated_at: new Date().toISOString(),
+  };
+
+  let verificationId: string;
+
+  if (existing) {
+    console.log('[submitIdentitySection] Updating existing record:', existing.id);
+    const { error: updateErr } = await admin
+      .from('verifications')
+      .update(identityFields)
+      .eq('id', existing.id);
+
+    if (updateErr) {
+      console.error('[submitIdentitySection] Update failed:', updateErr);
+      return { success: false, error: `Failed to save identity data: ${updateErr.message}` };
+    }
+    verificationId = existing.id;
+  } else {
+    console.log('[submitIdentitySection] Inserting new record');
+    const insertPayload = {
+      ...identityFields,
+      // Defaults for new record
+      wwcc_status: WWCC_STATUS.NOT_STARTED,
+      contact_status: CONTACT_STATUS.NOT_STARTED,
+      verification_status: deriveOverallStatus(
+        IDENTITY_STATUS.PENDING as IdentityStatus,
+        WWCC_STATUS.NOT_STARTED as WwccStatus,
+        CROSS_CHECK_STATUS.NOT_STARTED as CrossCheckStatus
+      ),
+    };
+    console.log('[submitIdentitySection] Insert payload keys:', Object.keys(insertPayload).join(', '));
+
+    const { data: inserted, error: insertErr } = await admin
+      .from('verifications')
+      .insert(insertPayload)
+      .select('id')
+      .single();
+
+    if (insertErr || !inserted) {
+      console.error('[submitIdentitySection] Insert failed:', insertErr);
+      return { success: false, error: `Failed to create verification record: ${insertErr?.message ?? 'unknown'}` };
+    }
+    verificationId = inserted.id;
+    console.log('[submitIdentitySection] Inserted:', verificationId);
   }
 
-  // Update nannies table: level -> 1 (Registered)
-  await adminClient.from('nannies').update({
-    verification_level: 1,
+  // Update nannies table: level → 1
+  const { error: nannyErr } = await admin.from('nannies').update({
+    verification_level: VERIFICATION_LEVEL.REGISTERED,
     updated_at: new Date().toISOString(),
   }).eq('user_id', user.id);
+  if (nannyErr) {
+    console.error('[submitIdentitySection] Nanny update failed:', nannyErr);
+  }
 
+  console.log('[submitIdentitySection] Done, verificationId:', verificationId);
   revalidatePath('/nanny/verification');
-  return { success: true, error: null, verificationId: verification.id };
+  return { success: true, error: null, verificationId };
 }
 
-// ── Step 2: WWCC ──
+// ── Submit Identity for Manual Review ──
 
-interface SubmitWWCCData {
-  wwcc_verification_method: string;
-  wwcc_number?: string;
-  wwcc_expiry_date?: string | null;
-  wwcc_grant_email_url?: string | null;
-  wwcc_service_nsw_screenshot_url?: string | null;
-}
+export async function submitIdentityForManualReview(): Promise<{ success: boolean; error: string | null }> {
+  const user = await getAuthUser();
+  if (!user) return { success: false, error: 'Not authenticated' };
 
-export async function submitWWCCStep(
-  data: SubmitWWCCData
-): Promise<{ success: boolean; error: string | null; verificationId?: string }> {
-  const supabase = createClient();
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
-  if (authError || !user) {
-    return { success: false, error: 'Not authenticated' };
-  }
+  const admin = createAdminClient();
 
-  if (!data.wwcc_verification_method) {
-    return { success: false, error: 'Missing WWCC verification method' };
-  }
-
-  if (data.wwcc_verification_method === 'grant_email' && !data.wwcc_grant_email_url) {
-    return { success: false, error: 'WWCC grant email document is required' };
-  }
-  if (data.wwcc_verification_method === 'service_nsw_app' && !data.wwcc_service_nsw_screenshot_url) {
-    return { success: false, error: 'Service NSW screenshot is required' };
-  }
-  if (data.wwcc_verification_method === 'manual_entry') {
-    if (!data.wwcc_number) return { success: false, error: 'WWCC number is required for manual entry' };
-    if (!data.wwcc_expiry_date) return { success: false, error: 'WWCC expiry date is required for manual entry' };
-  }
-
-  const adminClient = createAdminClient();
-
-  // Look up existing verification record
-  const { data: existing, error: lookupErr } = await adminClient
+  const { data: existing } = await admin
     .from('verifications')
     .select('id')
     .eq('user_id', user.id)
     .single();
 
-  if (lookupErr || !existing) {
-    return { success: false, error: 'No verification record found. Complete Step 1 first.' };
+  if (!existing) {
+    return { success: false, error: 'No verification record found' };
   }
 
-  const { error: updateErr } = await adminClient
+  // Set identity to review + wipe all WWCC data so user must re-submit after approval
+  const { error: updateErr } = await admin
     .from('verifications')
     .update({
-      wwcc_verification_method: data.wwcc_verification_method,
-      wwcc_number: data.wwcc_number?.trim() ?? null,
-      wwcc_expiry_date: data.wwcc_expiry_date ?? null,
-      wwcc_grant_email_url: data.wwcc_grant_email_url ?? null,
-      wwcc_service_nsw_screenshot_url: data.wwcc_service_nsw_screenshot_url ?? null,
-      // Clear previous WWCC AI data on resubmission
-      wwcc_rejection_reason: null,
+      identity_status: IDENTITY_STATUS.REVIEW,
+      identity_status_at: new Date().toISOString(),
+      identity_user_guidance: null,
+      // Wipe WWCC data — user must re-submit after manual ID approval
+      wwcc_status: WWCC_STATUS.NOT_STARTED,
+      wwcc_status_at: null,
+      wwcc_verification_method: null,
+      wwcc_number: null,
+      wwcc_expiry_date: null,
+      wwcc_grant_email_url: null,
+      wwcc_service_nsw_screenshot_url: null,
+      wwcc_doc_verified: false,
+      wwcc_doc_verified_at: null,
       wwcc_verified: false,
+      wwcc_ai_reasoning: null,
+      wwcc_ai_issues: null,
+      wwcc_rejection_reason: null,
+      wwcc_user_guidance: null,
       extracted_wwcc_surname: null,
       extracted_wwcc_first_name: null,
       extracted_wwcc_other_names: null,
       extracted_wwcc_number: null,
       extracted_wwcc_clearance_type: null,
       extracted_wwcc_expiry: null,
-      wwcc_ai_reasoning: null,
-      wwcc_ai_issues: null,
+      // Reset cross-check
+      cross_check_status: CROSS_CHECK_STATUS.NOT_STARTED,
+      cross_check_reasoning: null,
+      cross_check_issues: null,
+      cross_check_at: null,
       updated_at: new Date().toISOString(),
     })
     .eq('id', existing.id);
 
   if (updateErr) {
-    console.error('[submitWWCCStep] Update failed:', updateErr);
+    console.error('[submitIdentityForManualReview] Update failed:', updateErr);
+    return { success: false, error: 'Failed to submit for manual review' };
+  }
+
+  revalidatePath('/nanny/verification');
+  return { success: true, error: null };
+}
+
+// ── Submit WWCC Section ──
+
+interface SubmitWWCCData {
+  wwcc_verification_method: string;
+  wwcc_number?: string;
+  wwcc_expiry_date?: string;
+  wwcc_grant_email_url?: string;
+  wwcc_service_nsw_screenshot_url?: string;
+  // Extracted fields from PDF parser (for grant_email)
+  extracted_wwcc_surname?: string;
+  extracted_wwcc_first_name?: string;
+  extracted_wwcc_other_names?: string;
+  extracted_wwcc_number?: string;
+  extracted_wwcc_clearance_type?: string;
+  extracted_wwcc_expiry?: string;
+}
+
+export async function submitWWCCSection(
+  data: SubmitWWCCData
+): Promise<{ success: boolean; error: string | null; verificationId?: string }> {
+  const user = await getAuthUser();
+  if (!user) return { success: false, error: 'Not authenticated' };
+
+  if (!data.wwcc_verification_method) {
+    return { success: false, error: 'Missing WWCC verification method' };
+  }
+
+  const admin = createAdminClient();
+
+  const { data: existing } = await admin
+    .from('verifications')
+    .select('id, identity_status')
+    .eq('user_id', user.id)
+    .single();
+
+  if (!existing) {
+    return { success: false, error: 'No verification record found. Please complete Identity section first.' };
+  }
+
+  // Determine status based on method
+  let wwccStatus: string;
+  if (data.wwcc_verification_method === 'grant_email') {
+    wwccStatus = WWCC_STATUS.DOC_VERIFIED; // PDF already validated client-side
+  } else if (data.wwcc_verification_method === 'service_nsw_app') {
+    wwccStatus = WWCC_STATUS.PENDING; // Needs AI
+  } else {
+    wwccStatus = WWCC_STATUS.REVIEW; // Manual entry → admin reviews
+  }
+
+  const wwccFields = {
+    wwcc_verification_method: data.wwcc_verification_method,
+    wwcc_number: data.wwcc_number?.trim() ?? data.extracted_wwcc_number?.trim() ?? null,
+    wwcc_expiry_date: data.wwcc_expiry_date ?? data.extracted_wwcc_expiry ?? null,
+    wwcc_grant_email_url: data.wwcc_grant_email_url ?? null,
+    wwcc_service_nsw_screenshot_url: data.wwcc_service_nsw_screenshot_url ?? null,
+    // Extracted data (from PDF parser for grant_email)
+    extracted_wwcc_surname: data.extracted_wwcc_surname ?? null,
+    extracted_wwcc_first_name: data.extracted_wwcc_first_name ?? null,
+    extracted_wwcc_other_names: data.extracted_wwcc_other_names ?? null,
+    extracted_wwcc_number: data.extracted_wwcc_number ?? null,
+    extracted_wwcc_clearance_type: data.extracted_wwcc_clearance_type ?? null,
+    extracted_wwcc_expiry: data.extracted_wwcc_expiry ?? null,
+    // Status
+    wwcc_status: wwccStatus,
+    wwcc_status_at: new Date().toISOString(),
+    wwcc_verified: false,
+    wwcc_doc_verified: wwccStatus === WWCC_STATUS.DOC_VERIFIED,
+    wwcc_doc_verified_at: wwccStatus === WWCC_STATUS.DOC_VERIFIED ? new Date().toISOString() : null,
+    // Clear old AI data
+    wwcc_ai_reasoning: null,
+    wwcc_ai_issues: null,
+    wwcc_rejection_reason: null,
+    wwcc_user_guidance: null,
+    // Reset cross-check (must re-run after WWCC resubmission)
+    cross_check_status: CROSS_CHECK_STATUS.NOT_STARTED,
+    cross_check_reasoning: null,
+    cross_check_issues: null,
+    cross_check_at: null,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error: updateErr } = await admin
+    .from('verifications')
+    .update(wwccFields)
+    .eq('id', existing.id);
+
+  if (updateErr) {
+    console.error('[submitWWCCSection] Update failed:', updateErr);
     return { success: false, error: 'Failed to save WWCC data' };
+  }
+
+  // For grant_email: if identity is already verified, trigger cross-check
+  if (wwccStatus === WWCC_STATUS.DOC_VERIFIED && existing.identity_status === IDENTITY_STATUS.VERIFIED) {
+    // Set cross-check to pending, then run
+    await admin.from('verifications').update({
+      cross_check_status: CROSS_CHECK_STATUS.PENDING,
+      updated_at: new Date().toISOString(),
+    }).eq('id', existing.id);
+
+    // Run cross-check (fire-and-forget in server action context)
+    runCrossCheckPhase(existing.id).catch(err => {
+      console.error('[submitWWCCSection] Cross-check error:', err);
+    });
   }
 
   revalidatePath('/nanny/verification');
   return { success: true, error: null, verificationId: existing.id };
 }
 
-// ── Step 3: Contact Details ──
+// ── Submit Contact Section ──
 
 interface SubmitContactData {
   phone_number: string;
   address_line: string;
   city: string;
-  state?: string | null;
+  state?: string;
   postcode: string;
   country: string;
 }
 
-export async function submitContactStep(
+export async function submitContactSection(
   data: SubmitContactData
 ): Promise<{ success: boolean; error: string | null }> {
-  const supabase = createClient();
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
-  if (authError || !user) {
-    return { success: false, error: 'Not authenticated' };
-  }
+  const user = await getAuthUser();
+  if (!user) return { success: false, error: 'Not authenticated' };
 
   if (!data.phone_number?.trim() || !data.address_line?.trim() || !data.city?.trim() || !data.postcode?.trim()) {
     return { success: false, error: 'Missing required contact details' };
   }
 
-  const adminClient = createAdminClient();
+  const admin = createAdminClient();
 
-  const { error: updateErr } = await adminClient
+  const { data: existing } = await admin
+    .from('verifications')
+    .select('id')
+    .eq('user_id', user.id)
+    .single();
+
+  if (!existing) {
+    return { success: false, error: 'No verification record found. Please complete Identity section first.' };
+  }
+
+  const { error: updateErr } = await admin
     .from('verifications')
     .update({
       phone_number: data.phone_number.trim(),
@@ -190,12 +368,13 @@ export async function submitContactStep(
       state: data.state?.trim() ?? null,
       postcode: data.postcode.trim(),
       country: data.country.trim(),
+      contact_status: CONTACT_STATUS.SAVED,
       updated_at: new Date().toISOString(),
     })
-    .eq('user_id', user.id);
+    .eq('id', existing.id);
 
   if (updateErr) {
-    console.error('[submitContactStep] Update failed:', updateErr);
+    console.error('[submitContactSection] Update failed:', updateErr);
     return { success: false, error: 'Failed to save contact details' };
   }
 
@@ -203,42 +382,85 @@ export async function submitContactStep(
   return { success: true, error: null };
 }
 
-// ── Get Verification Status ──
+// ── Get Full Verification Data (for page load pre-population) ──
 
-export interface VerificationRecord {
+export interface VerificationData {
   id: string;
+  // Per-section statuses
+  identity_status: string;
+  wwcc_status: string;
+  contact_status: string;
+  cross_check_status: string;
+  // Legacy
   verification_status: number;
+  // Identity fields
+  surname: string | null;
+  given_names: string | null;
+  date_of_birth: string | null;
+  passport_country: string | null;
+  passport_upload_url: string | null;
+  identification_photo_url: string | null;
   identity_verified: boolean;
-  wwcc_verified: boolean;
   identity_rejection_reason: string | null;
-  wwcc_rejection_reason: string | null;
-  wwcc_expiry_date: string | null;
+  identity_user_guidance: UserGuidance | null;
+  extracted_passport_number: string | null;
+  extracted_nationality: string | null;
+  // WWCC fields
+  wwcc_verification_method: string | null;
   wwcc_number: string | null;
+  wwcc_expiry_date: string | null;
+  wwcc_grant_email_url: string | null;
+  wwcc_service_nsw_screenshot_url: string | null;
+  wwcc_doc_verified: boolean;
+  wwcc_verified: boolean;
+  wwcc_rejection_reason: string | null;
+  wwcc_user_guidance: UserGuidance | null;
+  // Contact fields
+  phone_number: string | null;
+  address_line: string | null;
+  city: string | null;
+  state: string | null;
+  postcode: string | null;
+  country: string | null;
+  // Cross-check
+  cross_check_reasoning: string | null;
+  // Timestamps
   created_at: string;
   updated_at: string;
 }
 
-export async function getVerificationStatus(): Promise<{
-  data: VerificationRecord | null;
+export async function getVerificationData(): Promise<{
+  data: VerificationData | null;
   error: string | null;
 }> {
+  const user = await getAuthUser();
+  if (!user) return { data: null, error: 'Not authenticated' };
+
   const supabase = createClient();
-
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
-  if (authError || !user) {
-    return { data: null, error: 'Not authenticated' };
-  }
-
   const { data, error } = await supabase
     .from('verifications')
-    .select('id, verification_status, identity_verified, wwcc_verified, identity_rejection_reason, wwcc_rejection_reason, wwcc_expiry_date, wwcc_number, created_at, updated_at')
+    .select(`
+      id,
+      identity_status, wwcc_status, contact_status, cross_check_status,
+      verification_status,
+      surname, given_names, date_of_birth, passport_country,
+      passport_upload_url, identification_photo_url,
+      identity_verified, identity_rejection_reason, identity_user_guidance,
+      extracted_passport_number, extracted_nationality,
+      wwcc_verification_method, wwcc_number, wwcc_expiry_date,
+      wwcc_grant_email_url, wwcc_service_nsw_screenshot_url,
+      wwcc_doc_verified, wwcc_verified, wwcc_rejection_reason, wwcc_user_guidance,
+      phone_number, address_line, city, state, postcode, country,
+      cross_check_reasoning,
+      created_at, updated_at
+    `)
     .eq('user_id', user.id)
     .single();
 
   if (error && error.code !== 'PGRST116') {
-    console.error('[getVerificationStatus] Error:', error);
-    return { data: null, error: 'Failed to fetch verification status' };
+    console.error('[getVerificationData] Error:', error);
+    return { data: null, error: 'Failed to fetch verification data' };
   }
 
-  return { data: data ?? null, error: null };
+  return { data: (data as VerificationData) ?? null, error: null };
 }

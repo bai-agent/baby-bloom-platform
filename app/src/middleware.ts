@@ -2,6 +2,11 @@ import { NextResponse, type NextRequest } from "next/server";
 import { updateSession } from "@/lib/supabase/middleware";
 
 export async function middleware(request: NextRequest) {
+  // DEV MODE: bypass all auth checks
+  if (process.env.NEXT_PUBLIC_DEV_MODE === 'true') {
+    return NextResponse.next();
+  }
+
   // Skip Supabase session management if env vars aren't configured
   if (
     !process.env.NEXT_PUBLIC_SUPABASE_URL?.startsWith("http") ||

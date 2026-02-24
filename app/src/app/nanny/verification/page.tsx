@@ -1,16 +1,8 @@
-import { getVerificationStatus } from "@/lib/actions/verification";
-import { VerificationStatusClient } from "./VerificationStatusClient";
+import { getVerificationData } from "@/lib/actions/verification";
+import { VerificationPageClient } from "./VerificationPageClient";
 
 export default async function NannyVerificationPage() {
-  const { data: verification } = await getVerificationStatus();
+  const { data: verification } = await getVerificationData();
 
-  return (
-    <VerificationStatusClient
-      initialStatus={verification?.verification_status ?? null}
-      identityRejectionReason={verification?.identity_rejection_reason ?? null}
-      wwccRejectionReason={verification?.wwcc_rejection_reason ?? null}
-      wwccExpiryDate={verification?.wwcc_expiry_date ?? null}
-      wwccNumber={verification?.wwcc_number ?? null}
-    />
-  );
+  return <VerificationPageClient initialData={verification} />;
 }

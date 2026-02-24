@@ -1,11 +1,10 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { VERIFICATION_STATUS } from '@/lib/verification';
+import { IDENTITY_STATUS, WWCC_STATUS, GUIDANCE_MESSAGES } from '@/lib/verification';
 
-// If status 10 or 20 has been stuck for this long, auto-escalate to manual review.
-// This is the safety net for pipeline timeouts / Vercel hard-kills.
-const STALE_THRESHOLD_MS = 3 * 60 * 1000; // 3 minutes
+// If a section has been 'processing' for this long, escalate to 'review'.
+const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 
 export async function GET() {
   const supabase = createClient();
@@ -17,7 +16,19 @@ export async function GET() {
 
   const { data } = await supabase
     .from('verifications')
-    .select('verification_status, updated_at')
+    .select(`
+      verification_status,
+      identity_status, wwcc_status, contact_status, cross_check_status,
+      identity_status_at, wwcc_status_at,
+      identity_verified, identity_rejection_reason, identity_user_guidance,
+      surname, given_names, date_of_birth,
+      extracted_passport_number, extracted_nationality,
+      wwcc_number, wwcc_expiry_date, wwcc_doc_verified, wwcc_verified,
+      wwcc_rejection_reason, wwcc_user_guidance,
+      ocg_result_status, ocg_verified_at,
+      cross_check_reasoning, cross_check_at,
+      updated_at
+    `)
     .eq('user_id', user.id)
     .single();
 
@@ -25,34 +36,66 @@ export async function GET() {
     return NextResponse.json({ status: null });
   }
 
-  let status = data.verification_status;
+  let { identity_status, wwcc_status } = data;
+  const now = Date.now();
 
-  // Staleness safety net: if auto-check status has been stuck too long,
-  // the pipeline likely died (Vercel timeout, OpenAI hang, etc.).
-  // Auto-escalate to manual review so the user isn't stuck forever.
-  if (status === VERIFICATION_STATUS.PENDING_ID_AUTO || status === VERIFICATION_STATUS.PENDING_WWCC_AUTO) {
-    const updatedAt = new Date(data.updated_at).getTime();
-    const stuckMs = Date.now() - updatedAt;
-
+  // Staleness safety net: processing stuck too long → escalate to review
+  if (identity_status === IDENTITY_STATUS.PROCESSING && data.identity_status_at) {
+    const stuckMs = now - new Date(data.identity_status_at).getTime();
     if (stuckMs > STALE_THRESHOLD_MS) {
-      const adminClient = createAdminClient();
-      const newStatus = status === VERIFICATION_STATUS.PENDING_ID_AUTO
-        ? VERIFICATION_STATUS.PENDING_ID_REVIEW
-        : VERIFICATION_STATUS.PENDING_WWCC_REVIEW;
-      const issueField = status === VERIFICATION_STATUS.PENDING_ID_AUTO
-        ? 'identity_ai_issues'
-        : 'wwcc_ai_issues';
-
-      await adminClient.from('verifications').update({
-        verification_status: newStatus,
-        [issueField]: JSON.stringify(['Auto-check timed out — escalated to manual review']),
+      const admin = createAdminClient();
+      await admin.from('verifications').update({
+        identity_status: IDENTITY_STATUS.REVIEW,
+        identity_status_at: new Date().toISOString(),
+        identity_ai_issues: JSON.stringify(['Auto-check timed out — escalated to manual review']),
+        identity_user_guidance: GUIDANCE_MESSAGES.TECHNICAL_STALE,
         updated_at: new Date().toISOString(),
       }).eq('user_id', user.id);
 
-      console.log(`[verification-status] Stale status ${status} for user ${user.id} — escalated to ${newStatus}`);
-      status = newStatus;
+      identity_status = IDENTITY_STATUS.REVIEW;
+      console.log(`[verification-status] Identity stale for user ${user.id} — escalated to review`);
     }
   }
 
-  return NextResponse.json({ status });
+  if (wwcc_status === WWCC_STATUS.PROCESSING && data.wwcc_status_at) {
+    const stuckMs = now - new Date(data.wwcc_status_at).getTime();
+    if (stuckMs > STALE_THRESHOLD_MS) {
+      const admin = createAdminClient();
+      await admin.from('verifications').update({
+        wwcc_status: WWCC_STATUS.REVIEW,
+        wwcc_status_at: new Date().toISOString(),
+        wwcc_ai_issues: JSON.stringify(['Auto-check timed out — escalated to manual review']),
+        wwcc_user_guidance: GUIDANCE_MESSAGES.TECHNICAL_STALE,
+        updated_at: new Date().toISOString(),
+      }).eq('user_id', user.id);
+
+      wwcc_status = WWCC_STATUS.REVIEW;
+      console.log(`[verification-status] WWCC stale for user ${user.id} — escalated to review`);
+    }
+  }
+
+  return NextResponse.json({
+    status: data.verification_status,
+    identity_status,
+    identity_verified: data.identity_verified,
+    identity_rejection_reason: data.identity_rejection_reason,
+    identity_user_guidance: data.identity_user_guidance,
+    surname: data.surname,
+    given_names: data.given_names,
+    date_of_birth: data.date_of_birth,
+    extracted_passport_number: data.extracted_passport_number,
+    extracted_nationality: data.extracted_nationality,
+    wwcc_status,
+    wwcc_number: data.wwcc_number,
+    wwcc_expiry_date: data.wwcc_expiry_date,
+    wwcc_doc_verified: data.wwcc_doc_verified,
+    wwcc_verified: data.wwcc_verified,
+    wwcc_rejection_reason: data.wwcc_rejection_reason,
+    wwcc_user_guidance: data.wwcc_user_guidance,
+    ocg_result_status: data.ocg_result_status,
+    ocg_verified_at: data.ocg_verified_at,
+    contact_status: data.contact_status,
+    cross_check_status: data.cross_check_status,
+    cross_check_reasoning: data.cross_check_reasoning,
+  });
 }

@@ -35,41 +35,37 @@ _Use this file to track daily progress during development._
 
 ## Week 1
 
-### YYYY-MM-DD (Day 1)
+### 2026-02-06 (Day 1)
 
 #### Completed
-- [x] _Task completed_
-
-#### In Progress
-- [ ] _Task in progress_
-
-#### Blockers
-- _None / Description_
-
-#### Notes
-- _Any notes_
-
-#### Tomorrow
-- [ ] _Next tasks_
-
----
-
-### YYYY-MM-DD (Day 2)
-
-#### Completed
-- [ ] _Tasks_
-
-#### In Progress
-- [ ] _Tasks_
+- [x] Database deployed to Supabase (23 tables, 7 functions, RLS on all tables)
+  - supabase-setup.sql: 235 commands executed
+  - rls-policies.sql: 253 commands executed
+  - seed.sql: 194 Sydney postcodes seeded
+- [x] Fixed PG17 compatibility issue (placement_duration_days generated column)
+- [x] Fixed table count verification (23 public tables, not 24)
+- [x] Swapped AI SDK from Anthropic to OpenAI
+  - Uninstalled @anthropic-ai/sdk
+  - Installed openai v6.18.0
+  - Created app/src/lib/ai/client.ts
+- [x] Updated all documentation to reference OpenAI instead of Anthropic
+- [x] Updated CLAUDE.md with full deployment status
+- [x] Updated planning files (architecture-roadmap, milestones, timeline)
 
 #### Blockers
-- _None / Description_
+- seed.sql test users require auth.users entries (created via Supabase Auth, not SQL)
+  - Postcode data was seeded successfully
+  - Test users to be created later via Supabase Dashboard or Auth API
 
 #### Notes
-- _Any notes_
+- Supabase project is in ap-northeast-1 (Tokyo), not ap-southeast-2 (Sydney)
+- PostgreSQL version: 17.6
+- Pooler connection: aws-1-ap-northeast-1.pooler.supabase.com:5432
+- PG17 enforces immutability on generated columns strictly (now() not allowed)
 
 #### Tomorrow
-- [ ] _Next tasks_
+- [ ] Phase 2: API Endpoints design
+- [ ] Create test auth users via Supabase Dashboard
 
 ---
 
@@ -91,7 +87,9 @@ _Important decisions made during development:_
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
-| _Date_ | _What was decided_ | _Why_ |
+| 2026-02-06 | Switch from Anthropic Claude to OpenAI GPT-4o | OpenAI SDK (openai) replaces @anthropic-ai/sdk |
+| 2026-02-06 | placement_duration_days NULL while active | PG17 requires immutable expressions in generated columns; now() is not immutable |
+| 2026-02-06 | 23 public tables (not 24) | auth.users is in auth schema, not counted in public |
 
 ---
 

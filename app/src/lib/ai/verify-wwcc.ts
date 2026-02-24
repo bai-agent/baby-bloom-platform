@@ -1,4 +1,5 @@
 import { openai } from './client';
+import type { UserGuidance } from '@/lib/verification';
 
 export interface WWCCVerificationResult {
   pass: boolean;
@@ -12,6 +13,7 @@ export interface WWCCVerificationResult {
   };
   reasoning: string;
   issues: string[];
+  user_guidance?: UserGuidance | null;
 }
 
 const WWCC_GRANT_EMAIL_PROMPT = `You are a document verification specialist for Working With Children Check (WWCC) grants in New South Wales, Australia.
@@ -58,8 +60,20 @@ Respond with ONLY valid JSON:
     "expiry": "YYYY-MM-DD"
   },
   "reasoning": "Step-by-step reasoning...",
-  "issues": ["issue 1", "issue 2"]
-}`;
+  "issues": ["issue 1", "issue 2"],
+  "user_guidance": null
+}
+
+IMPORTANT: When "pass" is false, you MUST provide "user_guidance":
+{
+  "user_guidance": {
+    "title": "Short friendly summary of the problem",
+    "explanation": "One sentence explaining what went wrong.",
+    "steps_to_fix": ["Step 1", "Step 2", "Step 3"]
+  }
+}
+
+When "pass" is true, set "user_guidance" to null.`;
 
 const WWCC_SERVICE_NSW_PROMPT = `You are a document verification specialist for Working With Children Check (WWCC) in New South Wales, Australia.
 
@@ -108,8 +122,26 @@ Respond with ONLY valid JSON:
     "expiry": "YYYY-MM-DD"
   },
   "reasoning": "Step-by-step reasoning...",
-  "issues": ["issue 1", "issue 2"]
-}`;
+  "issues": ["issue 1", "issue 2"],
+  "user_guidance": null
+}
+
+IMPORTANT: When "pass" is false, you MUST provide "user_guidance" — a friendly, non-combative message explaining the problem and how to fix it. Write as if speaking directly to the person.
+
+Format for user_guidance when pass is false:
+{
+  "user_guidance": {
+    "title": "Short friendly summary (e.g. 'We couldn't verify your Service NSW screenshot')",
+    "explanation": "One sentence explaining what went wrong in plain language.",
+    "steps_to_fix": [
+      "Step 1 the user can take",
+      "Step 2...",
+      "Step 3..."
+    ]
+  }
+}
+
+When "pass" is true, set "user_guidance" to null.`;
 
 export async function verifyWWCC(
   documentSignedUrl: string,
@@ -191,6 +223,7 @@ export async function verifyWWCC(
       },
       reasoning: parsed.reasoning ?? '',
       issues: Array.isArray(parsed.issues) ? parsed.issues : [],
+      user_guidance: parsed.user_guidance ?? null,
     };
   } catch (error) {
     console.error('[verifyWWCC] AI analysis failed:', error);
@@ -199,6 +232,7 @@ export async function verifyWWCC(
       extracted: { surname: null, first_name: null, other_names: null, wwcc_number: null, clearance_type: null, expiry: null },
       reasoning: `AI analysis failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
       issues: ['AI analysis failed — please review manually'],
+      user_guidance: null,
     };
   }
 }

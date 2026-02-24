@@ -10,5 +10,5 @@
 6. **Interview Email Coordination**: Sends emails to coordinate scheduling
 
 ## Provider
-- Anthropic Claude API
+- OpenAI API (GPT-4o)
 - Admin can review and override all AI decisions

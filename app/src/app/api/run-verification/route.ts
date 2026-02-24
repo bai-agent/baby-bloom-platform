@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { createAdminClient } from '@/lib/supabase/admin';
-import { runPassportPhase, runWWCCPhase } from '@/lib/ai/verification-pipeline';
-import { VERIFICATION_STATUS } from '@/lib/verification';
+import { runIdentityPhase, runWWCCDocPhase } from '@/lib/ai/verification-pipeline';
 
 export const maxDuration = 60;
 
@@ -14,74 +12,28 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
   }
 
-  const admin = createAdminClient();
-
   let verificationId: string | null = null;
   let phase: string | null = null;
+
   try {
     const body = await request.json();
     verificationId = body.verificationId ?? null;
     phase = body.phase ?? null;
   } catch { /* no body */ }
 
-  if (!verificationId) {
-    const { data, error } = await admin
-      .from('verifications')
-      .select('id')
-      .eq('user_id', user.id)
-      .single();
-
-    if (error || !data) {
-      return NextResponse.json({ error: 'No verification record found' }, { status: 404 });
-    }
-    verificationId = data.id;
+  if (!verificationId || !phase) {
+    return NextResponse.json({ error: 'Missing verificationId or phase' }, { status: 400 });
   }
 
-  const vid = verificationId as string;
-
   try {
-    // Step 1 trigger: run passport, then chain to WWCC if data is ready
     if (phase === 'identity') {
-      await runPassportPhase(vid);
-
-      const { data: fresh } = await admin
-        .from('verifications')
-        .select('verification_status, wwcc_verification_method')
-        .eq('id', vid)
-        .single();
-
-      if (fresh?.verification_status === VERIFICATION_STATUS.PENDING_WWCC_AUTO
-          && fresh.wwcc_verification_method) {
-        await runWWCCPhase(vid);
-      }
-      return NextResponse.json({ ok: true });
-    }
-
-    // Step 2 trigger: run WWCC only (passport already handled by Step 1)
-    if (phase === 'wwcc') {
-      const { data: fresh } = await admin
-        .from('verifications')
-        .select('verification_status, wwcc_verification_method')
-        .eq('id', vid)
-        .single();
-
-      if (fresh?.verification_status === VERIFICATION_STATUS.PENDING_WWCC_AUTO
-          && fresh.wwcc_verification_method) {
-        await runWWCCPhase(vid);
-      }
-      return NextResponse.json({ ok: true });
-    }
-
-    // No phase (legacy/manual trigger): run both sequentially
-    await runPassportPhase(vid);
-    const { data: fresh } = await admin
-      .from('verifications')
-      .select('verification_status, wwcc_verification_method')
-      .eq('id', vid)
-      .single();
-    if (fresh?.verification_status === VERIFICATION_STATUS.PENDING_WWCC_AUTO
-        && fresh.wwcc_verification_method) {
-      await runWWCCPhase(vid);
+      console.log(`[run-verification] Starting identity phase for ${verificationId}`);
+      await runIdentityPhase(verificationId);
+    } else if (phase === 'wwcc') {
+      console.log(`[run-verification] Starting WWCC doc phase for ${verificationId}`);
+      await runWWCCDocPhase(verificationId);
+    } else {
+      return NextResponse.json({ error: `Unknown phase: ${phase}` }, { status: 400 });
     }
 
     return NextResponse.json({ ok: true });

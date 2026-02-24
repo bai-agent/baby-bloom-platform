@@ -28,8 +28,8 @@ _Target dates and milestones for the platform rebuild._
 | 2 | Technical & Features | All feature specs, technical architecture |
 
 **Exit Criteria:**
-- [ ] All documentation folders populated
-- [ ] Existing system fully documented
+- [x] All documentation folders populated
+- [x] Existing system fully documented
 - [ ] Migration plan approved
 
 ---
@@ -43,9 +43,9 @@ _Target dates and milestones for the platform rebuild._
 | 4 | Auth | User registration, login, email verification |
 
 **Exit Criteria:**
-- [ ] Development environment working
+- [x] Development environment working
 - [ ] Authentication complete
-- [ ] Database schema implemented
+- [x] Database schema implemented (DEPLOYED to Supabase 2026-02-06)
 - [ ] Basic deploy pipeline working
 
 ---
@@ -120,8 +120,8 @@ _Target dates and milestones for the platform rebuild._
 
 | Milestone | Target Date | Status |
 |-----------|-------------|--------|
-| Documentation complete | _Week 2_ | ⬜ |
-| First deployment | _Week 3_ | ⬜ |
+| Documentation complete | _Week 2_ | ✅ |
+| First deployment | _Week 3_ | 🟡 DB deployed |
 | Auth working | _Week 4_ | ⬜ |
 | Search working | _Week 7_ | ⬜ |
 | Payments working | _Week 9_ | ⬜ |
@@ -156,5 +156,5 @@ _Target dates and milestones for the platform rebuild._
 
 ---
 
-**Last Updated:** _YYYY-MM-DD_
-**Status:** 🔴 Not Started
+**Last Updated:** 2026-02-06
+**Status:** 🟡 In Progress

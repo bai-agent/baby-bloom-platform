@@ -138,22 +138,29 @@ export async function verifyWWCCPdf(
 
     // ── 3. VALIDATE AGAINST SUBMITTED DATA ──
 
-    // Surname
+    // Surname — case-insensitive comparison (skip if submitted name is empty/missing)
     if (surname) {
-      if (surname.toLowerCase().trim() !== submittedData.surname.toLowerCase().trim()) {
-        issues.push(`Surname mismatch: document "${surname}" vs submitted "${submittedData.surname}"`);
+      if (submittedData.surname?.trim()) {
+        if (surname.toLowerCase().trim() !== submittedData.surname.toLowerCase().trim()) {
+          issues.push(`Surname mismatch: document "${surname}" vs submitted "${submittedData.surname}"`);
+        }
       }
-    } else {
+    } else if (submittedData.surname?.trim()) {
       issues.push('Could not extract surname from document');
     }
 
-    // First name — compare against first word of given_names
-    const submittedFirst = submittedData.given_names.split(/\s+/)[0]?.toLowerCase().trim();
-    if (firstName && submittedFirst) {
-      if (firstName.toLowerCase().trim() !== submittedFirst) {
-        issues.push(`First name mismatch: document "${firstName}" vs submitted "${submittedFirst}"`);
+    // First name — lenient: check submitted first name appears in extracted names (skip if empty)
+    const submittedFirstTokens = submittedData.given_names?.trim()
+      ? submittedData.given_names.toLowerCase().trim().split(/\s+/).filter(Boolean)
+      : [];
+    const extractedNameParts = [firstName, otherName].filter(Boolean).join(' ').toLowerCase().trim().split(/\s+/).filter(Boolean);
+
+    if (extractedNameParts.length > 0 && submittedFirstTokens.length > 0) {
+      const firstNameMatch = submittedFirstTokens[0] && extractedNameParts.some(p => p === submittedFirstTokens[0]);
+      if (!firstNameMatch) {
+        issues.push(`First name mismatch: document "${[firstName, otherName].filter(Boolean).join(' ')}" vs submitted "${submittedData.given_names}"`);
       }
-    } else if (!firstName) {
+    } else if (extractedNameParts.length === 0 && submittedFirstTokens.length > 0) {
       issues.push('Could not extract first name from document');
     }
 
@@ -201,7 +208,7 @@ export async function verifyWWCCPdf(
     const reasoning = [
       `Authenticity: ${markersFound}/${AUTHENTICITY_MARKERS.length} markers found${missingMarkers.length ? ` (missing: ${missingMarkers.join(', ')})` : ''}`,
       surname ? `Surname: "${surname}" ${surname.toLowerCase().trim() === submittedData.surname.toLowerCase().trim() ? '(matches)' : '(MISMATCH)'}` : 'Surname: not found',
-      firstName ? `First name: "${firstName}" ${firstName.toLowerCase().trim() === submittedFirst ? '(matches)' : '(MISMATCH)'}` : 'First name: not found',
+      firstName ? `First name: "${firstName}"${otherName ? ` / Other: "${otherName}"` : ''} ${!issues.some(i => i.includes('First name mismatch')) ? '(matches)' : '(MISMATCH)'}` : 'First name: not found',
       otherName ? `Other name: "${otherName}"` : 'Other name: none',
       finalWwcc ? `WWCC number: ${finalWwcc}${submittedData.wwcc_number?.trim() ? (finalWwcc.toUpperCase().trim() === submittedData.wwcc_number.toUpperCase().trim() ? ' (matches)' : ' (MISMATCH)') : ' (extracted from document)'}` : 'WWCC number: not found',
       clearanceType ? `Clearance type: ${clearanceType}` : 'Clearance type: not found',

@@ -171,7 +171,7 @@ psql $DATABASE_URL -f rollback.sql
 | `STRIPE_SECRET_KEY` | **Live** Stripe key |
 | `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret |
 | `RESEND_API_KEY` | Email service key |
-| `ANTHROPIC_API_KEY` | AI service key |
+| `OPENAI_API_KEY` | AI service key |
 
 ### Vercel Environment Variables
 

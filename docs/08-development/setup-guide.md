@@ -61,8 +61,8 @@ NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY=pk_test_...
 # Resend (for emails)
 RESEND_API_KEY=re_...
 
-# Claude API (for AI features)
-ANTHROPIC_API_KEY=sk-ant-...
+# OpenAI (for AI features)
+OPENAI_API_KEY=sk-proj-...
 ```
 
 ### 4. Set Up Local Supabase
@@ -219,7 +219,7 @@ pnpm type-check
 | `STRIPE_SECRET_KEY` | ✅ | Stripe secret key |
 | `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` | ✅ | Stripe publishable key |
 | `RESEND_API_KEY` | 🔶 | For email sending |
-| `ANTHROPIC_API_KEY` | 🔶 | For AI features |
+| `OPENAI_API_KEY` | 🔶 | For AI features |
 | `TWILIO_ACCOUNT_SID` | 🔶 | For SMS |
 | `TWILIO_AUTH_TOKEN` | 🔶 | For SMS |
 

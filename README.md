@@ -128,7 +128,7 @@ See [docs/08-development/setup-guide.md](docs/08-development/setup-guide.md) for
 | Hosting | Vercel |
 | Payments | Stripe |
 | Email | Resend |
-| AI | Claude (Anthropic) |
+| AI | OpenAI (GPT-4o) |
 
 ---
 

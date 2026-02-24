@@ -432,11 +432,73 @@ CREATE TABLE verifications (
   passport_expiry_date DATE,
   identity_rejection_reason TEXT,
 
-  -- OVERALL STATUS
-  verification_status TEXT CHECK (verification_status IN ('pending', 'wwcc_verified', 'fully_verified', 'rejected', 'expired')) DEFAULT 'pending',
+  -- OVERALL STATUS (integer-based, see verification_pipeline constants)
+  -- 0=Not Started, 10-12=ID stage, 20-28=WWCC stage, 30=Provisional, 40=Fully Verified
+  verification_status INTEGER DEFAULT 0,
+
+  -- PER-SECTION STATUSES (string-based, drive UI)
+  identity_status TEXT DEFAULT 'not_started',
+  wwcc_status TEXT DEFAULT 'not_started',
+  contact_status TEXT DEFAULT 'not_started',
+  cross_check_status TEXT DEFAULT 'not_started',
+  identity_status_at TIMESTAMPTZ,
+  wwcc_status_at TIMESTAMPTZ,
+
+  -- AI VERIFICATION DATA
+  wwcc_doc_verified BOOLEAN DEFAULT false,
+  wwcc_doc_verified_at TIMESTAMPTZ,
+  wwcc_ai_reasoning TEXT,
+  wwcc_ai_issues JSONB,
+  wwcc_user_guidance JSONB,       -- UserGuidance object for nanny-facing messages
+  identity_ai_reasoning TEXT,
+  identity_ai_issues JSONB,
+  identity_user_guidance JSONB,
+  extracted_surname TEXT,
+  extracted_given_names TEXT,
+  extracted_dob TEXT,
+  extracted_nationality TEXT,
+  extracted_passport_number TEXT,
+  extracted_passport_expiry TEXT,
+  extracted_wwcc_surname TEXT,
+  extracted_wwcc_first_name TEXT,
+  extracted_wwcc_other_names TEXT,
+  extracted_wwcc_number TEXT,
+  extracted_wwcc_clearance_type TEXT,
+  extracted_wwcc_expiry TEXT,
+
+  -- CROSS-CHECK
+  cross_check_reasoning TEXT,
+  cross_check_issues JSONB,
+  cross_check_at TIMESTAMPTZ,
+
+  -- OCG AUDIT DATA (Office of the Children's Guardian — AUTHORITATIVE source)
+  -- These columns record the EXACT data from OCG verification emails.
+  -- OCG CLEARED is the ONLY path to FULLY_VERIFIED (status 40).
+  ocg_employer_id TEXT,            -- OCG employer account ID
+  ocg_employer_name TEXT,          -- Employer name registered with OCG
+  ocg_verified_at TIMESTAMPTZ,    -- When OCG performed the check
+  ocg_result_status TEXT,          -- CLEARED / NOT FOUND / BARRED / INTERIM BAR / EXPIRED / CLOSED / APPLICATION IN PROGRESS
+  ocg_result_text TEXT,            -- Full OCG result description verbatim
+  ocg_expiry_date DATE,            -- WWCC expiry as confirmed by OCG (authoritative)
+  ocg_reference_number TEXT,       -- WWCC number confirmed by OCG
+  ocg_google_message_id TEXT,      -- Google Message-ID of the OCG notification email
+  ocg_recorded_at TIMESTAMPTZ,    -- When we recorded this OCG data
+
+  -- CONTACT DETAILS
+  phone_number TEXT,
+  address_line TEXT,
+  city TEXT,
+  state TEXT,
+  postcode TEXT,
+  country TEXT,
 
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW(),
+
+  -- OCG authority constraint: FULLY_VERIFIED requires OCG CLEARED
+  CONSTRAINT chk_fully_verified_requires_ocg_cleared CHECK (
+    verification_status != 40 OR ocg_result_status = 'CLEARED' OR ocg_result_status IS NULL
+  ),
 
   CONSTRAINT valid_wwcc_method CHECK (
     wwcc_verification_method IS NULL OR
@@ -446,12 +508,38 @@ CREATE TABLE verifications (
   )
 );
 
+-- Trigger: sync nanny record when OCG result is set (see migration SQL)
+-- Trigger: trg_sync_nanny_from_ocg → sync_nanny_from_ocg_result()
+
 CREATE INDEX idx_verifications_user ON verifications(user_id);
 CREATE INDEX idx_verifications_wwcc_verified ON verifications(wwcc_verified);
 CREATE INDEX idx_verifications_identity_verified ON verifications(identity_verified);
 CREATE INDEX idx_verifications_status ON verifications(verification_status);
 CREATE INDEX idx_verifications_wwcc_expiry ON verifications(wwcc_expiry_date) WHERE wwcc_verified = true;
 ```
+
+**Verification Status Codes (integer):**
+
+| Code | Name | Description |
+|------|------|-------------|
+| 0 | NOT_STARTED | No verification attempted |
+| 10 | PENDING_ID_AUTO | Identity AI check in progress |
+| 11 | PENDING_ID_REVIEW | Identity needs manual review |
+| 12 | ID_REJECTED | Identity verification failed |
+| 20 | PENDING_WWCC_AUTO | WWCC AI check in progress |
+| 21 | PENDING_WWCC_REVIEW | WWCC needs manual/admin review |
+| 22 | WWCC_REJECTED | WWCC rejected (or BARRED by OCG) |
+| 23 | WWCC_EXPIRED | WWCC expired (OCG or auto-detected) |
+| 24 | WWCC_DOCUMENT_FAILED | WWCC document parsing failed |
+| 25 | WWCC_PROCESSING | WWCC AI processing |
+| 26 | WWCC_OCG_NOT_FOUND | OCG has no record of this WWCC |
+| 27 | WWCC_CLOSED | OCG says WWCC application was closed |
+| 28 | WWCC_APPLICATION_PENDING | OCG says application still in progress |
+| 30 | PROVISIONALLY_VERIFIED | AI checks passed, awaiting OCG |
+| 40 | FULLY_VERIFIED | OCG CLEARED (only path here) |
+
+**WWCC Status Values (string):**
+`not_started`, `pending`, `processing`, `doc_verified`, `review`, `rejected`, `failed`, `expired`, `ocg_not_found`, `closed`, `application_pending`, `barred`
 
 ---
 
@@ -808,6 +896,29 @@ CREATE INDEX idx_user_progress_reached ON user_progress(reached_at);
 CREATE UNIQUE INDEX idx_user_progress_unique ON user_progress(user_id, stage);
 ```
 
+### 18. FORM_SNAPSHOTS (Audit Trail)
+
+Saves the full raw form data on every submission/edit. Provides complete version history and a safety net if schema evolves.
+
+```sql
+CREATE TABLE form_snapshots (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  form_type TEXT NOT NULL CHECK (form_type IN (
+    'nanny_registration', 'nanny_edit', 'parent_position', 'verification'
+  )),
+  data JSONB NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_form_snapshots_user ON form_snapshots(user_id, form_type);
+```
+
+**Key Features:**
+- Every form submission saves a timestamped JSONB snapshot
+- Multiple snapshots per user (one per submission/edit)
+- RLS: users can only view/insert their own snapshots
+
 ---
 
 ## AUTOMATED PROCESSES
@@ -868,25 +979,25 @@ $$ LANGUAGE plpgsql;
 - JSONB data: ~5 MB
 - **Total: ~30 MB**
 
-### Cloudinary (Images):
-- Profile pictures: 1,500 × 200 KB = 300 MB
-- Nanny ad images: 3,000 × 500 KB = 1.5 GB
-- **Total: ~2 GB**
+### Supabase Storage:
 
-### Supabase Storage (Documents):
+**Bucket: `profile-pictures` (public)**
+- Profile pictures: 1,500 × 200 KB = 300 MB
+
+**Bucket: `verification-documents` (private)**
 - WWCC docs: 1,000 × 2 MB = 2 GB
 - Passport scans: 1,000 × 2 MB = 2 GB
 - Certifications: 3,000 × 1 MB = 3 GB
-- **Total: ~7 GB**
+- **Total: ~7.3 GB**
 
-**Grand Total: 30 MB (DB) + 2 GB (Cloudinary) + 7 GB (Supabase) = ~9 GB**
+**Grand Total: 30 MB (DB) + 7.3 GB (Supabase Storage) = ~7.3 GB**
 
 ---
 
 ## FINAL STATUS
 
 ✅ **All Design Decisions Made**
-✅ **Schema Finalized (24 Tables)**
+✅ **Schema Finalized (25 Tables)**
 ✅ **Merged Qualifications + Certifications**
 ✅ **Child Ages in Months**
 ✅ **5-Year File Retention**

@@ -95,13 +95,13 @@ Need AI capabilities for profile generation, document verification, and email co
 
 ### Options Considered
 
-1. **Claude (Anthropic)**
-   - Pros: Excellent instruction following, strong at writing, good at analysis
-   - Cons: Newer, smaller ecosystem
+1. **GPT-4o (OpenAI)** ✅ Selected
+   - Pros: Large ecosystem, well-documented, widely used, vision capabilities, competitive pricing
+   - Cons: None significant for our use case
 
-2. **GPT-4 (OpenAI)**
-   - Pros: Large ecosystem, well-documented, widely used
-   - Cons: More expensive, sometimes less reliable
+2. **Claude (Anthropic)**
+   - Pros: Excellent instruction following, strong at writing
+   - Cons: Smaller ecosystem
 
 3. **Mix of models**
    - Pros: Best tool for each job
