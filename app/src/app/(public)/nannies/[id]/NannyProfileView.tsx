@@ -171,7 +171,6 @@ interface NannyProfileViewProps {
   nanny: PublicNannyProfile;
   isOwner?: boolean;
   isParent?: boolean;
-  hasActivePosition?: boolean;
   pendingRequestCount?: number;
   existingRequestStatus?: string | null;
 }
@@ -180,7 +179,6 @@ export function NannyProfileView({
   nanny,
   isOwner = false,
   isParent = false,
-  hasActivePosition = false,
   pendingRequestCount = 0,
   existingRequestStatus = null,
 }: NannyProfileViewProps) {
