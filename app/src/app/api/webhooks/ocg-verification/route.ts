@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { VERIFICATION_STATUS, VERIFICATION_LEVEL, WWCC_STATUS, CROSS_CHECK_STATUS, GUIDANCE_MESSAGES } from '@/lib/verification';
 import { parseOCGEmail } from '@/lib/verification/parse-ocg-email';
+import { sendEmail } from '@/lib/email/resend';
+import { getUserEmailInfo } from '@/lib/email/helpers';
 
 // ── OCG Result Status Categories ──
 // These MUST match the exact strings from the OCG portal email
@@ -416,5 +418,101 @@ async function updateVerificationFromOCG(
     : 'processed';
 
   console.log(`[OCG Webhook] ${result.result_status} → verification ${verificationId} → status ${mapped.verification_status} (${actionName})`);
+
+  // ── Send OCG result emails (fire-and-forget) ──
+  sendOCGResultEmails(userId, result.result_status, isCleared, isBarred).catch(err => {
+    console.error(`[OCG Webhook] Email send error:`, err);
+  });
+
   return { action: actionName };
+}
+
+// ── OCG Result Email Dispatch ──
+
+async function sendOCGResultEmails(
+  userId: string,
+  ocgStatus: string,
+  isCleared: boolean,
+  isBarred: boolean,
+): Promise<void> {
+  // No email for CLEARED — nanny already received VER-001 at provisionally verified
+  if (isCleared) return;
+
+  const userInfo = await getUserEmailInfo(userId);
+  if (!userInfo) return;
+
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://app-babybloom.vercel.app';
+  const baseStyle = `font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px;`;
+  const btnStyle = `background: #8B5CF6; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600;`;
+
+  if (isBarred) {
+    // VER-010: Barred — sent from hello@ (reply-enabled)
+    await sendEmail({
+      to: userInfo.email,
+      subject: 'Important: Your Baby Bloom account has been restricted',
+      html: `<div style="${baseStyle}">
+        <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
+        <p style="color: #374151; font-size: 16px; line-height: 1.6;">[TBD] VER-010 — OCG Barred / Account Restricted. Account suspended due to OCG BARRED status. No resubmission possible. Contact Baby Bloom if believed to be an error.</p>
+      </div>`,
+      emailType: 'verification_rejected',
+      recipientUserId: userId,
+    });
+
+    // VER-011: Admin notification
+    const adminEmail = process.env.ADMIN_EMAIL || 'admin@babybloomsydney.com.au';
+    await sendEmail({
+      to: adminEmail,
+      subject: `⚠️ BARRED nanny account suspended: ${userInfo.firstName} ${userInfo.lastName}`,
+      html: `<div style="${baseStyle}">
+        <h1 style="color: #EF4444; font-size: 24px; margin-bottom: 16px;">⚠️ BARRED Account</h1>
+        <p style="color: #374151; font-size: 16px; line-height: 1.6;">[TBD] VER-011 — Admin Alert: Barred Account. Nanny ${userInfo.firstName} ${userInfo.lastName} (${userInfo.email}) barred by OCG. Account auto-suspended.</p>
+        <p style="margin-top: 24px;"><a href="${appUrl}/admin/users" style="${btnStyle}">View in Admin</a></p>
+      </div>`,
+      emailType: 'admin_notification',
+    });
+    return;
+  }
+
+  // OCG non-cleared, non-barred results: NOT FOUND, EXPIRED, CLOSED, APPLICATION IN PROGRESS
+  const emailMap: Record<string, { id: string; subject: string; summary: string; emailType: string }> = {
+    'NOT FOUND': {
+      id: 'VER-006',
+      subject: 'Important: Your WWCC verification needs attention',
+      summary: 'OCG could not find WWCC number with provided details. Nanny needs to check details and resubmit via website.',
+      emailType: 'verification_rejected',
+    },
+    'EXPIRED': {
+      id: 'VER-007',
+      subject: 'Important: Your WWCC has expired',
+      summary: 'OCG confirmed WWCC has expired. Nanny needs to apply for new WWCC at OCG website then resubmit.',
+      emailType: 'wwcc_expired',
+    },
+    'CLOSED': {
+      id: 'VER-008',
+      subject: 'Important: Your WWCC application has been closed',
+      summary: 'OCG indicated WWCC application was closed. Nanny needs to submit new application at OCG website then resubmit.',
+      emailType: 'verification_rejected',
+    },
+    'APPLICATION IN PROGRESS': {
+      id: 'VER-009',
+      subject: 'Update: Your WWCC application is still being processed',
+      summary: 'OCG confirmed WWCC application still being processed. No action needed from nanny — wait for OCG then resubmit.',
+      emailType: 'verification_pending',
+    },
+  };
+
+  const emailConfig = emailMap[ocgStatus];
+  if (!emailConfig) return;
+
+  await sendEmail({
+    to: userInfo.email,
+    subject: emailConfig.subject,
+    html: `<div style="${baseStyle}">
+      <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
+      <p style="color: #374151; font-size: 16px; line-height: 1.6;">[TBD] ${emailConfig.id} — ${emailConfig.summary}</p>
+      <p style="margin-top: 24px;"><a href="${appUrl}/nanny/verification" style="${btnStyle}">View Details</a></p>
+    </div>`,
+    emailType: emailConfig.emailType,
+    recipientUserId: userId,
+  });
 }

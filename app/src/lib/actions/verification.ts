@@ -16,6 +16,8 @@ import {
   type UserGuidance,
 } from '@/lib/verification';
 import { triggerCrossCheck } from '@/lib/ai/verification-pipeline';
+import { sendEmail } from '@/lib/email/resend';
+import { getUserEmailInfo } from '@/lib/email/helpers';
 
 // ── Shared auth helper ──
 
@@ -211,6 +213,23 @@ export async function submitIdentityForManualReview(): Promise<{ success: boolea
   if (updateErr) {
     console.error('[submitIdentityForManualReview] Update failed:', updateErr);
     return { success: false, error: 'Failed to submit for manual review' };
+  }
+
+  // VER-004: Submitted for Manual Review email
+  const userInfo = await getUserEmailInfo(user.id);
+  if (userInfo) {
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://app-babybloom.vercel.app';
+    sendEmail({
+      to: userInfo.email,
+      subject: "We're reviewing your documents",
+      html: `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px;">
+        <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
+        <p style="color: #374151; font-size: 16px; line-height: 1.6;">[TBD] VER-004 — Submitted for Manual Review. Confirms documents received for manual review. Expected turnaround 24-48 hours.</p>
+        <p style="margin-top: 24px;"><a href="${appUrl}/nanny/verification" style="background: #8B5CF6; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600;">View Status</a></p>
+      </div>`,
+      emailType: 'verification_pending',
+      recipientUserId: user.id,
+    }).catch(err => console.error('[ManualReview] VER-004 email error:', err));
   }
 
   revalidatePath('/nanny/verification');

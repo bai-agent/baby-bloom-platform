@@ -5,6 +5,7 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { redirect } from 'next/navigation';
 import { UserRole } from './types';
 import { getDashboardPath } from './roles';
+import { sendEmail } from '@/lib/email/resend';
 
 export interface ActionResult {
   error?: string;
@@ -146,6 +147,37 @@ export async function signUp(formData: FormData): Promise<ActionResult> {
     if (progressError) {
       console.error('Progress insert error:', progressError);
       // Non-critical, don't fail the signup
+    }
+
+    // 6. Send welcome email (fire-and-forget)
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://app-babybloom.vercel.app';
+    const baseStyle = `font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px;`;
+    const btnStyle = `background: #8B5CF6; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600;`;
+
+    if (role === 'nanny') {
+      sendEmail({
+        to: email,
+        subject: 'Welcome to Baby Bloom! 🎉',
+        html: `<div style="${baseStyle}">
+          <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
+          <p style="color: #374151; font-size: 16px; line-height: 1.6;">[TBD] ACC-001 — Nanny Welcome. Welcomes nanny to Baby Bloom. Next step: complete your profile and start verification to become visible to families.</p>
+          <p style="margin-top: 24px;"><a href="${appUrl}/nanny/profile" style="${btnStyle}">Complete Your Profile</a></p>
+        </div>`,
+        emailType: 'welcome',
+        recipientUserId: userId,
+      }).catch(err => console.error('[Signup] ACC-001 email error:', err));
+    } else {
+      sendEmail({
+        to: email,
+        subject: 'Welcome to Baby Bloom! 🎉',
+        html: `<div style="${baseStyle}">
+          <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
+          <p style="color: #374151; font-size: 16px; line-height: 1.6;">[TBD] ACC-002 — Parent Welcome. Welcomes parent to Baby Bloom. Next step: browse verified nannies and create a position to start matching.</p>
+          <p style="margin-top: 24px;"><a href="${appUrl}/parent/browse" style="${btnStyle}">Browse Nannies</a></p>
+        </div>`,
+        emailType: 'welcome',
+        recipientUserId: userId,
+      }).catch(err => console.error('[Signup] ACC-002 email error:', err));
     }
 
     return {

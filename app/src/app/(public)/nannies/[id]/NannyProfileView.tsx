@@ -6,6 +6,7 @@ import Link from "next/link";
 import { PublicNannyProfile } from "@/lib/actions/nanny";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { ConnectModal } from "@/components/ConnectModal";
 import {
   User,
   FileText,
@@ -15,6 +16,8 @@ import {
   ShieldCheck,
   BadgeCheck,
   Pencil,
+  Clock,
+  Check,
 } from "lucide-react";
 
 // ── Helpers ──
@@ -164,8 +167,25 @@ function VerificationBadge({ tier }: { tier: string }) {
 
 // ── Main Component ──
 
-export function NannyProfileView({ nanny, isOwner = false }: { nanny: PublicNannyProfile; isOwner?: boolean }) {
+interface NannyProfileViewProps {
+  nanny: PublicNannyProfile;
+  isOwner?: boolean;
+  isParent?: boolean;
+  hasActivePosition?: boolean;
+  pendingRequestCount?: number;
+  existingRequestStatus?: string | null;
+}
+
+export function NannyProfileView({
+  nanny,
+  isOwner = false,
+  isParent = false,
+  hasActivePosition = false,
+  pendingRequestCount = 0,
+  existingRequestStatus = null,
+}: NannyProfileViewProps) {
   const [activeTab, setActiveTab] = useState<TabId>("profile");
+  const [showConnectModal, setShowConnectModal] = useState(false);
 
   const age = calculateAge(nanny.date_of_birth);
   const bioSummary = parseBioSummary(nanny.ai_content?.bio_summary);
@@ -241,12 +261,54 @@ export function NannyProfileView({ nanny, isOwner = false }: { nanny: PublicNann
         {/* CTA */}
         {!isOwner && (
           <div className="mt-5">
-            <Link href="/login">
-              <Button className="w-full bg-violet-600 hover:bg-violet-700 text-white font-medium">
-                Request Interview
+            {existingRequestStatus === 'confirmed' ? (
+              <Button disabled className="w-full bg-green-600 text-white font-medium">
+                <Check className="mr-2 h-4 w-4" />
+                Connected
               </Button>
-            </Link>
+            ) : existingRequestStatus === 'pending' ? (
+              <Button disabled className="w-full bg-amber-500 text-white font-medium">
+                <Clock className="mr-2 h-4 w-4" />
+                Request Pending
+              </Button>
+            ) : isParent && hasActivePosition ? (
+              <Button
+                className="w-full bg-violet-600 hover:bg-violet-700 text-white font-medium"
+                onClick={() => setShowConnectModal(true)}
+              >
+                Connect with {nanny.first_name}
+              </Button>
+            ) : isParent && !hasActivePosition ? (
+              <Link href="/parent/position">
+                <Button className="w-full bg-slate-400 hover:bg-slate-500 text-white font-medium">
+                  Create a position to connect
+                </Button>
+              </Link>
+            ) : (
+              <Link href="/login">
+                <Button className="w-full bg-violet-600 hover:bg-violet-700 text-white font-medium">
+                  Connect with {nanny.first_name}
+                </Button>
+              </Link>
+            )}
           </div>
+        )}
+
+        {/* Connect Modal */}
+        {isParent && hasActivePosition && (
+          <ConnectModal
+            isOpen={showConnectModal}
+            onClose={() => setShowConnectModal(false)}
+            nanny={{
+              id: nanny.nanny_id,
+              first_name: nanny.first_name,
+              last_name: nanny.last_name,
+              suburb: nanny.suburb,
+              hourly_rate_min: nanny.hourly_rate_min,
+              profile_picture_url: nanny.profile_picture_url,
+            }}
+            pendingRequestCount={pendingRequestCount}
+          />
         )}
       </div>
 

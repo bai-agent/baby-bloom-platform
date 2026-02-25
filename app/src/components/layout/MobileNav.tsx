@@ -16,7 +16,6 @@ import {
   Home,
   User,
   ShieldCheck,
-  Calendar,
   Briefcase,
   Settings,
   Search,
@@ -34,6 +33,8 @@ import {
   MessageSquare,
   LogIn,
   UserPlus,
+  Inbox,
+  Link2,
 } from "lucide-react";
 
 type UserRole = "nanny" | "parent" | "admin" | "super_admin" | "guest";
@@ -55,7 +56,7 @@ const nannyNavItems: NavItem[] = [
   { href: "/nanny/profile", icon: User, label: "My Profile" },
   { href: "/nanny/team", icon: Users, label: "Our Team" },
   { href: "/nanny/verification", icon: ShieldCheck, label: "Verification" },
-  { href: "/nanny/interviews", icon: Calendar, label: "Interview Requests" },
+  { href: "/nanny/inbox", icon: Inbox, label: "Inbox" },
   { href: "/nanny/babysitting", icon: Briefcase, label: "Babysitting Jobs" },
   { href: "/nanny/settings", icon: Settings, label: "Settings" },
 ];
@@ -65,7 +66,8 @@ const parentNavItems: NavItem[] = [
   { href: "/parent/browse", icon: Search, label: "Browse Nannies" },
   { href: "/parent/position", icon: ClipboardList, label: "My Position" },
   { href: "/parent/request", icon: PlusCircle, label: "Nanny Request" },
-  { href: "/parent/interviews", icon: Calendar, label: "Interviews" },
+  { href: "/parent/connections", icon: Link2, label: "Connections" },
+  { href: "/parent/inbox", icon: Inbox, label: "Inbox" },
   { href: "/parent/babysitting", icon: Baby, label: "Babysitting" },
   { href: "/parent/settings", icon: Settings, label: "Settings" },
 ];

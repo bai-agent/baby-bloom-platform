@@ -1,4 +1,6 @@
 import { createAdminClient } from '@/lib/supabase/admin';
+import { sendEmail } from '@/lib/email/resend';
+import { getUserEmailInfo } from '@/lib/email/helpers';
 import {
   VERIFICATION_LEVEL,
   IDENTITY_STATUS,
@@ -348,6 +350,23 @@ export async function runCrossCheckPhase(verificationId: string): Promise<void> 
   }).eq('user_id', claimed.user_id);
 
   console.log(`[CrossCheck] PASSED — level 3, provisionally verified`);
+
+  // VER-001: Provisionally Verified email
+  const userInfo = await getUserEmailInfo(claimed.user_id);
+  if (userInfo) {
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://app-babybloom.vercel.app';
+    sendEmail({
+      to: userInfo.email,
+      subject: "You're verified! Welcome to Baby Bloom 🎉",
+      html: `<div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px;">
+        <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
+        <p style="color: #374151; font-size: 16px; line-height: 1.6;">[TBD] VER-001 — Provisionally Verified. Congratulates nanny on passing verification. Profile now visible to families. Can start receiving interview requests.</p>
+        <p style="margin-top: 24px;"><a href="${appUrl}/nanny/profile" style="background: #8B5CF6; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600;">View Your Profile</a></p>
+      </div>`,
+      emailType: 'verification_approved',
+      recipientUserId: claimed.user_id,
+    }).catch(err => console.error('[CrossCheck] VER-001 email error:', err));
+  }
 }
 
 // ── Trigger cross-check if both phases are ready ──
