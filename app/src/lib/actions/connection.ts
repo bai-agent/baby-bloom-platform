@@ -150,17 +150,13 @@ export async function createConnectionRequest(
     return { success: false, error: 'Not authenticated as parent' };
   }
 
-  // Must have active position
+  // Check for active position (optional — not required for testing)
   const { data: position } = await supabase
     .from('nanny_positions')
     .select('id')
     .eq('parent_id', parentId)
     .eq('status', 'active')
-    .single();
-
-  if (!position) {
-    return { success: false, error: 'You need an active position before connecting with nannies. Create one in My Position.' };
-  }
+    .maybeSingle();
 
   // Max 5 pending requests
   const { count } = await supabase
@@ -212,7 +208,7 @@ export async function createConnectionRequest(
     .insert({
       parent_id: parentId,
       nanny_id: nannyId,
-      position_id: position.id,
+      position_id: position?.id ?? null,
       status: 'pending',
       proposed_times: proposedTimes,
       message: message || null,

@@ -271,19 +271,13 @@ export function NannyProfileView({
                 <Clock className="mr-2 h-4 w-4" />
                 Request Pending
               </Button>
-            ) : isParent && hasActivePosition ? (
+            ) : isParent ? (
               <Button
                 className="w-full bg-violet-600 hover:bg-violet-700 text-white font-medium"
                 onClick={() => setShowConnectModal(true)}
               >
                 Connect with {nanny.first_name}
               </Button>
-            ) : isParent && !hasActivePosition ? (
-              <Link href="/parent/position">
-                <Button className="w-full bg-slate-400 hover:bg-slate-500 text-white font-medium">
-                  Create a position to connect
-                </Button>
-              </Link>
             ) : (
               <Link href="/login">
                 <Button className="w-full bg-violet-600 hover:bg-violet-700 text-white font-medium">
@@ -295,7 +289,7 @@ export function NannyProfileView({
         )}
 
         {/* Connect Modal */}
-        {isParent && hasActivePosition && (
+        {isParent && (
           <ConnectModal
             isOpen={showConnectModal}
             onClose={() => setShowConnectModal(false)}
