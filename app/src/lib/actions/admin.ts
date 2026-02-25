@@ -1,6 +1,7 @@
 'use server';
 
 import { createClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/admin';
 import { revalidatePath } from 'next/cache';
 import {
   VERIFICATION_STATUS,
@@ -244,6 +245,133 @@ export async function adminRejectWWCC(
 
   if (updateNannyErr) {
     return { success: false, error: `Failed to update nanny: ${updateNannyErr.message}` };
+  }
+
+  revalidatePath('/admin/users');
+  return { success: true, error: null };
+}
+
+// ── Admin: Delete User ──
+// Deletes from auth.users which cascades to all FK-referenced tables
+
+export async function adminDeleteUser(
+  userId: string
+): Promise<{ success: boolean; error: string | null }> {
+  const { error: authErr } = await requireAdmin();
+  if (authErr) return { success: false, error: authErr };
+
+  const adminClient = createAdminClient();
+
+  const { error } = await adminClient.auth.admin.deleteUser(userId);
+
+  if (error) {
+    console.error('[Admin] Delete user error:', error);
+    return { success: false, error: `Failed to delete user: ${error.message}` };
+  }
+
+  revalidatePath('/admin/users');
+  return { success: true, error: null };
+}
+
+// ── Admin: Change Role ──
+// Updates user_roles and creates skeleton role-specific record if needed
+
+export async function adminChangeRole(
+  userId: string,
+  newRole: 'nanny' | 'parent' | 'admin'
+): Promise<{ success: boolean; error: string | null }> {
+  const { error: authErr } = await requireAdmin();
+  if (authErr) return { success: false, error: authErr };
+
+  const adminClient = createAdminClient();
+
+  // Update role
+  const { error: roleErr } = await adminClient
+    .from('user_roles')
+    .update({ role: newRole, updated_at: new Date().toISOString() })
+    .eq('user_id', userId);
+
+  if (roleErr) {
+    return { success: false, error: `Failed to update role: ${roleErr.message}` };
+  }
+
+  // Create skeleton nanny record if switching to nanny
+  if (newRole === 'nanny') {
+    const { data: existing } = await adminClient
+      .from('nannies')
+      .select('id')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (!existing) {
+      const { error: insertErr } = await adminClient
+        .from('nannies')
+        .insert({ user_id: userId, status: 'active' });
+
+      if (insertErr) {
+        console.error('[Admin] Create nanny record error:', insertErr);
+      }
+    }
+  }
+
+  // Create skeleton parent record if switching to parent
+  if (newRole === 'parent') {
+    const { data: existing } = await adminClient
+      .from('parents')
+      .select('id')
+      .eq('user_id', userId)
+      .maybeSingle();
+
+    if (!existing) {
+      const { error: insertErr } = await adminClient
+        .from('parents')
+        .insert({ user_id: userId, status: 'active' });
+
+      if (insertErr) {
+        console.error('[Admin] Create parent record error:', insertErr);
+      }
+    }
+  }
+
+  revalidatePath('/admin/users');
+  return { success: true, error: null };
+}
+
+// ── Admin: Reset Verification ──
+// Resets nanny verification to zero for re-testing
+
+export async function adminResetVerification(
+  userId: string
+): Promise<{ success: boolean; error: string | null }> {
+  const { error: authErr } = await requireAdmin();
+  if (authErr) return { success: false, error: authErr };
+
+  const adminClient = createAdminClient();
+
+  // Reset nanny record
+  const { error: nannyErr } = await adminClient
+    .from('nannies')
+    .update({
+      verification_level: VERIFICATION_LEVEL.SIGNED_UP,
+      verification_status: VERIFICATION_STATUS.NOT_STARTED,
+      wwcc_verified: false,
+      identity_verified: false,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('user_id', userId);
+
+  if (nannyErr) {
+    return { success: false, error: `Failed to reset nanny: ${nannyErr.message}` };
+  }
+
+  // Delete all verification records
+  const { error: deleteErr } = await adminClient
+    .from('verifications')
+    .delete()
+    .eq('user_id', userId);
+
+  if (deleteErr) {
+    return { success: false, error: `Failed to delete verifications: ${deleteErr.message}` };
   }
 
   revalidatePath('/admin/users');
