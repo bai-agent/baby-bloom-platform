@@ -4,10 +4,8 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
 import { createConnectionRequest } from "@/lib/actions/connection";
-import { X, Loader2, Calendar, MapPin, Check, Phone } from "lucide-react";
+import { X, Loader2, MapPin, Check, Phone, Send, UserCheck, Clock } from "lucide-react";
 
 interface ConnectModalProps {
   isOpen: boolean;
@@ -25,7 +23,6 @@ interface ConnectModalProps {
 
 export function ConnectModal({ isOpen, onClose, nanny, pendingRequestCount }: ConnectModalProps) {
   const router = useRouter();
-  const [times, setTimes] = useState<string[]>(["", "", ""]);
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -33,27 +30,10 @@ export function ConnectModal({ isOpen, onClose, nanny, pendingRequestCount }: Co
 
   if (!isOpen) return null;
 
-  const handleTimeChange = (index: number, value: string) => {
-    const newTimes = [...times];
-    newTimes[index] = value;
-    setTimes(newTimes);
-  };
-
-  const allTimesFilled = times.every((t) => t.trim() !== "");
   const atLimit = pendingRequestCount >= 5;
-
-  // Min: 24 hours from now, Max: 7 days from now
-  const now = new Date();
-  const minDateTime = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 16);
-  const maxDateTime = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-
-    if (!allTimesFilled) {
-      setError("Please fill in all 3 time slots.");
-      return;
-    }
 
     if (atLimit) {
       setError("You have reached the maximum of 5 open requests.");
@@ -63,7 +43,7 @@ export function ConnectModal({ isOpen, onClose, nanny, pendingRequestCount }: Co
     setSubmitting(true);
     setError(null);
 
-    const result = await createConnectionRequest(nanny.id, times, message || undefined);
+    const result = await createConnectionRequest(nanny.id, message || undefined);
 
     setSubmitting(false);
 
@@ -71,7 +51,7 @@ export function ConnectModal({ isOpen, onClose, nanny, pendingRequestCount }: Co
       setSuccess(true);
       setTimeout(() => {
         onClose();
-        router.refresh();
+        router.push('/parent/connections');
       }, 2000);
     } else {
       setError(result.error || "Failed to send request");
@@ -86,7 +66,7 @@ export function ConnectModal({ isOpen, onClose, nanny, pendingRequestCount }: Co
             <div>
               <CardTitle>Connect with {nanny.first_name}</CardTitle>
               <CardDescription>
-                Propose 3 times for a 15-minute intro call
+                Request a 15-minute intro
               </CardDescription>
             </div>
             <Button variant="ghost" size="sm" onClick={onClose}>
@@ -122,12 +102,6 @@ export function ConnectModal({ isOpen, onClose, nanny, pendingRequestCount }: Co
                       {nanny.suburb}
                     </p>
                   </div>
-                  {nanny.hourly_rate_min && (
-                    <div className="ml-auto text-right">
-                      <p className="font-bold">${nanny.hourly_rate_min}</p>
-                      <p className="text-xs text-slate-500">/hour</p>
-                    </div>
-                  )}
                 </div>
               </div>
 
@@ -139,42 +113,45 @@ export function ConnectModal({ isOpen, onClose, nanny, pendingRequestCount }: Co
                 </span>
               </div>
 
-              {/* Intro Call Info */}
-              <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3">
-                <Phone className="h-4 w-4 text-blue-600 flex-shrink-0" />
-                <p className="text-sm text-blue-700">
-                  This is a 15-minute phone call. If {nanny.first_name} accepts, their phone number will be shared with you.
-                </p>
+              {/* How It Works */}
+              <div className="space-y-3">
+                <p className="text-sm font-medium text-slate-700">How it works</p>
+                <div className="space-y-2.5">
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-violet-100 text-xs font-bold text-violet-600">1</div>
+                    <div className="flex items-center gap-2 text-sm text-slate-600">
+                      <Send className="h-3.5 w-3.5 text-violet-500 flex-shrink-0" />
+                      <span>You send a connection request</span>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-violet-100 text-xs font-bold text-violet-600">2</div>
+                    <div className="flex items-center gap-2 text-sm text-slate-600">
+                      <UserCheck className="h-3.5 w-3.5 text-violet-500 flex-shrink-0" />
+                      <span>{nanny.first_name} reviews and accepts or declines</span>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-violet-100 text-xs font-bold text-violet-600">3</div>
+                    <div className="flex items-center gap-2 text-sm text-slate-600">
+                      <Phone className="h-3.5 w-3.5 text-violet-500 flex-shrink-0" />
+                      <span>You pick a call time and their number is shared</span>
+                    </div>
+                  </div>
+                </div>
               </div>
 
-              {/* Proposed Times */}
-              <div className="space-y-3">
-                <Label className="flex items-center gap-2">
-                  <Calendar className="h-4 w-4" />
-                  Propose 3 Times
-                </Label>
-                <p className="text-sm text-slate-500">
-                  Choose 3 times in the next 7 days (at least 24 hours from now). {nanny.first_name} will pick one.
+              {/* Info box */}
+              <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3">
+                <Clock className="h-4 w-4 text-blue-600 flex-shrink-0" />
+                <p className="text-sm text-blue-700">
+                  {nanny.first_name} has 3 days to respond to your request.
                 </p>
-                {[0, 1, 2].map((index) => (
-                  <div key={index} className="flex items-center gap-2">
-                    <span className="w-8 text-sm text-slate-500">#{index + 1}</span>
-                    <Input
-                      type="datetime-local"
-                      value={times[index]}
-                      onChange={(e) => handleTimeChange(index, e.target.value)}
-                      min={minDateTime}
-                      max={maxDateTime}
-                      required
-                      className="flex-1"
-                    />
-                  </div>
-                ))}
               </div>
 
               {/* Message */}
               <div className="space-y-2">
-                <Label htmlFor="connect-message">Message (optional)</Label>
+                <label htmlFor="connect-message" className="text-sm font-medium text-slate-700">Message (optional)</label>
                 <textarea
                   id="connect-message"
                   value={message}
@@ -197,7 +174,7 @@ export function ConnectModal({ isOpen, onClose, nanny, pendingRequestCount }: Co
                 <Button
                   type="submit"
                   className="flex-1 bg-violet-500 hover:bg-violet-600"
-                  disabled={submitting || !allTimesFilled || atLimit}
+                  disabled={submitting || atLimit}
                 >
                   {submitting ? (
                     <>

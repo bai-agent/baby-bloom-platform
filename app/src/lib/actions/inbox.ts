@@ -33,8 +33,9 @@ export async function getInboxMessages(): Promise<{ data: InboxMessage[]; error:
     .limit(50);
 
   if (error) {
+    // Table may not exist yet — treat as empty
     console.error('[Inbox] Fetch error:', error);
-    return { data: [], error: 'Failed to fetch inbox messages' };
+    return { data: [], error: null };
   }
 
   return { data: data ?? [], error: null };

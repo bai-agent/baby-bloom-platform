@@ -29,10 +29,6 @@ import {
   LucideIcon,
   HelpCircle,
   Eye,
-  LayoutDashboard,
-  MessageSquare,
-  LogIn,
-  UserPlus,
   Inbox,
   Link2,
 } from "lucide-react";
@@ -81,19 +77,11 @@ const adminNavItems: NavItem[] = [
   { href: "/admin/settings", icon: Settings, label: "Settings" },
 ];
 
-const guestPublicItems: NavItem[] = [
+const publicNavItems: NavItem[] = [
   { href: "/", icon: Home, label: "Home" },
   { href: "/nannies", icon: Search, label: "Browse Nannies" },
   { href: "/about", icon: HelpCircle, label: "About" },
   { href: "/how-it-works", icon: Eye, label: "How It Works" },
-];
-
-const guestProtectedItems: NavItem[] = [
-  { href: "/signup", icon: LayoutDashboard, label: "Dashboard" },
-  { href: "/signup", icon: MessageSquare, label: "Interviews" },
-  { href: "/signup", icon: Baby, label: "Babysitting" },
-  { href: "/signup", icon: ClipboardList, label: "My Position" },
-  { href: "/signup", icon: Settings, label: "Settings" },
 ];
 
 const navItemsByRole: Record<UserRole, NavItem[]> = {
@@ -101,14 +89,17 @@ const navItemsByRole: Record<UserRole, NavItem[]> = {
   parent: parentNavItems,
   admin: adminNavItems,
   super_admin: adminNavItems,
-  guest: guestPublicItems,
+  guest: publicNavItems,
 };
 
-export function MobileNav({ role, open, onOpenChange }: MobileNavProps) {
+export function MobileNav({ role: propRole, open, onOpenChange }: MobileNavProps) {
   const pathname = usePathname();
+  const { user, role: authRole, profile, signOut } = useAuth();
+
+  // Use auth role if user is logged in, otherwise fall back to prop
+  const role: UserRole = (user && authRole) ? authRole as UserRole : propRole;
   const isGuest = role === "guest";
-  const { profile, signOut } = useAuth();
-  const navItems = navItemsByRole[role] || [];
+  const navItems = navItemsByRole[role] || publicNavItems;
 
   const fullName = profile
     ? `${profile.first_name || ""} ${profile.last_name || ""}`.trim()
@@ -148,47 +139,10 @@ export function MobileNav({ role, open, onOpenChange }: MobileNavProps) {
               </Link>
             );
           })}
-
-          {isGuest && (
-            <>
-              <div className="my-3 border-t border-slate-200" />
-              <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-                Sign up to access
-              </p>
-              {guestProtectedItems.map((item) => {
-                const Icon = item.icon;
-                return (
-                  <Link
-                    key={item.label}
-                    href={item.href}
-                    onClick={() => onOpenChange(false)}
-                    className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition-colors"
-                  >
-                    <Icon className="h-5 w-5" />
-                    {item.label}
-                  </Link>
-                );
-              })}
-            </>
-          )}
         </nav>
 
-        {isGuest ? (
-          <div className="border-t p-4 space-y-2">
-            <Button asChild variant="outline" className="w-full" onClick={() => onOpenChange(false)}>
-              <Link href="/login">
-                <LogIn className="mr-2 h-4 w-4" />
-                Log in
-              </Link>
-            </Button>
-            <Button asChild className="w-full bg-violet-500 hover:bg-violet-600" onClick={() => onOpenChange(false)}>
-              <Link href="/signup">
-                <UserPlus className="mr-2 h-4 w-4" />
-                Sign Up
-              </Link>
-            </Button>
-          </div>
-        ) : (
+        {/* Bottom: user info if logged in, nothing for guests */}
+        {!isGuest && (
           <div className="border-t p-4">
             <div className="flex items-center gap-3">
               <UserAvatar

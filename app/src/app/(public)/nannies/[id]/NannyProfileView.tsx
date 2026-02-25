@@ -16,7 +16,6 @@ import {
   ShieldCheck,
   BadgeCheck,
   Pencil,
-  Clock,
   Check,
 } from "lucide-react";
 
@@ -260,15 +259,19 @@ export function NannyProfileView({
         {!isOwner && (
           <div className="mt-5">
             {existingRequestStatus === 'confirmed' ? (
-              <Button disabled className="w-full bg-green-600 text-white font-medium">
-                <Check className="mr-2 h-4 w-4" />
-                Connected
-              </Button>
-            ) : existingRequestStatus === 'pending' ? (
-              <Button disabled className="w-full bg-amber-500 text-white font-medium">
-                <Clock className="mr-2 h-4 w-4" />
-                Request Pending
-              </Button>
+              <Link href="/parent/connections">
+                <Button className="w-full bg-green-600 hover:bg-green-700 text-white font-medium">
+                  <Check className="mr-2 h-4 w-4" />
+                  Connected
+                </Button>
+              </Link>
+            ) : existingRequestStatus === 'pending' || existingRequestStatus === 'accepted' ? (
+              <Link href="/parent/connections">
+                <Button className="w-full bg-green-600 hover:bg-green-700 text-white font-medium">
+                  <Check className="mr-2 h-4 w-4" />
+                  Connection Pending
+                </Button>
+              </Link>
             ) : isParent ? (
               <Button
                 className="w-full bg-violet-600 hover:bg-violet-700 text-white font-medium"

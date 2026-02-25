@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useAuth } from "@/contexts/AuthContext";
 import { SidebarItem } from "./SidebarItem";
 import { UserAvatar } from "@/components/dashboard/UserAvatar";
@@ -22,10 +21,6 @@ import {
   PlusCircle,
   HelpCircle,
   Eye,
-  LayoutDashboard,
-  MessageSquare,
-  LogIn,
-  UserPlus,
   Inbox,
   Link2,
 } from "lucide-react";
@@ -68,19 +63,11 @@ const adminNavItems = [
   { href: "/admin/settings", icon: Settings, label: "Settings" },
 ];
 
-const guestPublicItems = [
+const publicNavItems = [
   { href: "/", icon: Home, label: "Home" },
   { href: "/nannies", icon: Search, label: "Browse Nannies" },
   { href: "/about", icon: HelpCircle, label: "About" },
   { href: "/how-it-works", icon: Eye, label: "How It Works" },
-];
-
-const guestProtectedItems = [
-  { href: "/signup", icon: LayoutDashboard, label: "Dashboard" },
-  { href: "/signup", icon: MessageSquare, label: "Interviews" },
-  { href: "/signup", icon: Baby, label: "Babysitting" },
-  { href: "/signup", icon: ClipboardList, label: "My Position" },
-  { href: "/signup", icon: Settings, label: "Settings" },
 ];
 
 const navItemsByRole: Record<UserRole, typeof nannyNavItems> = {
@@ -88,13 +75,16 @@ const navItemsByRole: Record<UserRole, typeof nannyNavItems> = {
   parent: parentNavItems,
   admin: adminNavItems,
   super_admin: adminNavItems,
-  guest: guestPublicItems,
+  guest: publicNavItems,
 };
 
-export function Sidebar({ role, collapsed, onToggle }: SidebarProps) {
+export function Sidebar({ role: propRole, collapsed, onToggle }: SidebarProps) {
+  const { user, role: authRole, profile, signOut } = useAuth();
+
+  // Use auth role if user is logged in, otherwise fall back to prop
+  const role: UserRole = (user && authRole) ? authRole as UserRole : propRole;
   const isGuest = role === "guest";
-  const { profile, signOut } = useAuth();
-  const navItems = navItemsByRole[role] || [];
+  const navItems = navItemsByRole[role] || publicNavItems;
 
   const fullName = profile
     ? `${profile.first_name || ""} ${profile.last_name || ""}`.trim()
@@ -134,75 +124,10 @@ export function Sidebar({ role, collapsed, onToggle }: SidebarProps) {
             collapsed={collapsed}
           />
         ))}
-
-        {/* Guest: protected items that redirect to signup */}
-        {isGuest && !collapsed && (
-          <>
-            <div className="my-3 border-t border-slate-200" />
-            <p className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
-              Sign up to access
-            </p>
-            {guestProtectedItems.map((item) => (
-              <SidebarItem
-                key={item.label}
-                href={item.href}
-                icon={item.icon}
-                label={item.label}
-                collapsed={collapsed}
-              />
-            ))}
-          </>
-        )}
-        {isGuest && collapsed && (
-          <>
-            <div className="my-3 border-t border-slate-200" />
-            {guestProtectedItems.map((item) => (
-              <SidebarItem
-                key={item.label}
-                href={item.href}
-                icon={item.icon}
-                label={item.label}
-                collapsed={collapsed}
-              />
-            ))}
-          </>
-        )}
       </nav>
 
-      {/* Bottom Section */}
-      {isGuest ? (
-        <div className={`border-t p-4 ${collapsed ? "space-y-1" : "space-y-2"}`}>
-          {collapsed ? (
-            <>
-              <Button asChild variant="outline" size="icon" className="w-full">
-                <Link href="/login">
-                  <LogIn className="h-4 w-4" />
-                </Link>
-              </Button>
-              <Button asChild size="icon" className="w-full bg-violet-500 hover:bg-violet-600">
-                <Link href="/signup">
-                  <UserPlus className="h-4 w-4" />
-                </Link>
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button asChild variant="outline" className="w-full">
-                <Link href="/login">
-                  <LogIn className="mr-2 h-4 w-4" />
-                  Log in
-                </Link>
-              </Button>
-              <Button asChild className="w-full bg-violet-500 hover:bg-violet-600">
-                <Link href="/signup">
-                  <UserPlus className="mr-2 h-4 w-4" />
-                  Sign Up
-                </Link>
-              </Button>
-            </>
-          )}
-        </div>
-      ) : (
+      {/* Bottom Section — user info or nothing for guests */}
+      {!isGuest && (
         <div className="border-t p-4">
           {collapsed ? (
             <div className="flex flex-col items-center gap-2">

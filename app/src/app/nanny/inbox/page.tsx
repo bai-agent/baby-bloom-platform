@@ -28,8 +28,9 @@ export default async function NannyInboxPage() {
     );
   }
 
-  const pendingRequests = connectionsResult.data.filter((r) => r.status === "pending");
-  const pastConnections = connectionsResult.data.filter((r) => r.status !== "pending");
+  const activeStatuses = ["pending", "accepted", "confirmed"];
+  const pendingRequests = connectionsResult.data.filter((r) => activeStatuses.includes(r.status));
+  const pastConnections = connectionsResult.data.filter((r) => !activeStatuses.includes(r.status));
   const notifications = inboxResult.data.filter(
     (msg) => !msg.reference_type || msg.reference_type !== "connection_request" || !["connection_request"].includes(msg.type)
   );

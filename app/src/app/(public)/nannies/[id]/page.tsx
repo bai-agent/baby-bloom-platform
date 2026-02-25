@@ -1,5 +1,6 @@
 import { getPublicNannyProfile } from "@/lib/actions/nanny";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { NannyProfileView } from "./NannyProfileView";
 import { notFound } from "next/navigation";
 
@@ -38,26 +39,36 @@ export default async function NannyProfilePage({
         if (role?.role === 'parent') {
           isParent = true;
 
-          // Count pending connection requests
-          const { count } = await supabase
-            .from('connection_requests')
-            .select('id', { count: 'exact', head: true })
-            .eq('parent_id', user.id)
-            .eq('status', 'pending');
+          // Look up parent table ID (connection_requests.parent_id = parents.id, NOT auth.users.id)
+          const adminClient = createAdminClient();
+          const { data: parentRecord } = await adminClient
+            .from('parents')
+            .select('id')
+            .eq('user_id', user.id)
+            .single();
 
-          pendingRequestCount = count ?? 0;
+          if (parentRecord) {
+            // Count pending connection requests
+            const { count } = await adminClient
+              .from('connection_requests')
+              .select('id', { count: 'exact', head: true })
+              .eq('parent_id', parentRecord.id)
+              .eq('status', 'pending');
 
-          // Check existing request with this nanny
-          const { data: existing } = await supabase
-            .from('connection_requests')
-            .select('status')
-            .eq('parent_id', user.id)
-            .eq('nanny_id', nanny.nanny_id)
-            .in('status', ['pending', 'confirmed'])
-            .limit(1)
-            .maybeSingle();
+            pendingRequestCount = count ?? 0;
 
-          existingRequestStatus = existing?.status ?? null;
+            // Check existing request with this nanny
+            const { data: existing } = await adminClient
+              .from('connection_requests')
+              .select('status')
+              .eq('parent_id', parentRecord.id)
+              .eq('nanny_id', nanny.nanny_id)
+              .in('status', ['pending', 'accepted', 'confirmed'])
+              .limit(1)
+              .maybeSingle();
+
+            existingRequestStatus = existing?.status ?? null;
+          }
         }
       }
     }

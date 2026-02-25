@@ -7,6 +7,8 @@ import { getParentId } from './parent';
 import { getNannyPhone, getPositionSummary, createInboxMessage, logConnectionEvent } from './connection-helpers';
 import { sendEmail } from '@/lib/email/resend';
 import { getUserEmailInfo } from '@/lib/email/helpers';
+import { sydneyToUTC, BRACKET_KEYS, TIME_BRACKETS, getBracketForHour, formatSydneyDate } from '@/lib/timezone';
+import type { BracketKey } from '@/lib/timezone';
 
 // ── Types ──
 
@@ -15,7 +17,7 @@ export interface ConnectionRequest {
   parent_id: string;
   nanny_id: string;
   position_id: string | null;
-  status: 'pending' | 'confirmed' | 'declined' | 'cancelled' | 'expired';
+  status: 'pending' | 'accepted' | 'confirmed' | 'declined' | 'cancelled' | 'expired';
   proposed_times: string[];
   confirmed_time: string | null;
   confirmed_at: string | null;
@@ -54,7 +56,8 @@ async function getNannyId(): Promise<{ nannyId: string; userId: string } | null>
   const { data: { user }, error: authError } = await supabase.auth.getUser();
   if (authError || !user) return null;
 
-  const { data: nanny, error } = await supabase
+  const adminClient = createAdminClient();
+  const { data: nanny, error } = await adminClient
     .from('nannies')
     .select('id')
     .eq('user_id', user.id)
@@ -64,7 +67,7 @@ async function getNannyId(): Promise<{ nannyId: string; userId: string } | null>
   return { nannyId: nanny.id, userId: user.id };
 }
 
-// ── Helper: expire stale pending requests ──
+// ── Helper: expire stale pending/accepted requests ──
 
 async function expireStaleRequests(
   supabase: ReturnType<typeof createAdminClient>,
@@ -74,8 +77,8 @@ async function expireStaleRequests(
 
   const query = supabase
     .from('connection_requests')
-    .select('id, parent_id, nanny_id')
-    .eq('status', 'pending')
+    .select('id, parent_id, nanny_id, status')
+    .in('status', ['pending', 'accepted'])
     .lt('expires_at', now);
 
   if (filter.nanny_id) query.eq('nanny_id', filter.nanny_id);
@@ -88,7 +91,7 @@ async function expireStaleRequests(
       .from('connection_requests')
       .update({ status: 'expired', updated_at: now })
       .eq('id', req.id)
-      .eq('status', 'pending');
+      .in('status', ['pending', 'accepted']);
 
     // Get user IDs for inbox messages
     const { data: nannyData } = await supabase
@@ -103,12 +106,16 @@ async function expireStaleRequests(
       .eq('id', req.parent_id)
       .single();
 
+    const expiredStatus = req.status as string;
+
     if (parentData) {
       await createInboxMessage({
         userId: parentData.user_id,
         type: 'connection_expired',
         title: 'Connection request expired',
-        body: 'Your connection request has expired as the nanny did not respond in time.',
+        body: expiredStatus === 'accepted'
+          ? 'Your accepted connection has expired because a call time was not scheduled in time.'
+          : 'Your connection request has expired as the nanny did not respond in time.',
         actionUrl: '/parent/connections',
         referenceId: req.id,
         referenceType: 'connection_request',
@@ -119,8 +126,10 @@ async function expireStaleRequests(
       await createInboxMessage({
         userId: nannyData.user_id,
         type: 'connection_expired',
-        title: 'Missed connection request',
-        body: 'A connection request has expired. Responding promptly helps families find the right nanny.',
+        title: expiredStatus === 'accepted' ? 'Accepted connection expired' : 'Missed connection request',
+        body: expiredStatus === 'accepted'
+          ? 'An accepted connection has expired because the family did not schedule a call time in time.'
+          : 'A connection request has expired. Responding promptly helps families find the right nanny.',
         actionUrl: '/nanny/inbox',
         referenceId: req.id,
         referenceType: 'connection_request',
@@ -136,11 +145,10 @@ async function expireStaleRequests(
   }
 }
 
-// ── 1. Create Connection Request ──
+// ── 1. Create Connection Request (Parent → Nanny) ──
 
 export async function createConnectionRequest(
   nannyId: string,
-  proposedTimes: string[],
   message?: string
 ): Promise<{ success: boolean; error: string | null; requestId?: string }> {
   const supabase = createClient();
@@ -175,32 +183,15 @@ export async function createConnectionRequest(
     .select('id')
     .eq('parent_id', parentId)
     .eq('nanny_id', nannyId)
-    .in('status', ['pending', 'confirmed'])
+    .in('status', ['pending', 'accepted', 'confirmed'])
     .single();
 
   if (existing) {
     return { success: false, error: 'You already have an active connection request with this nanny.' };
   }
 
-  // Validate proposed times
-  if (proposedTimes.length !== 3) {
-    return { success: false, error: 'Please propose exactly 3 times.' };
-  }
-
-  const now = Date.now();
-  const twentyFourHours = 24 * 60 * 60 * 1000;
-  const sevenDays = 7 * 24 * 60 * 60 * 1000;
-
-  for (const time of proposedTimes) {
-    const t = new Date(time).getTime();
-    if (isNaN(t)) return { success: false, error: 'Invalid date format.' };
-    if (t < now + twentyFourHours) return { success: false, error: 'All proposed times must be at least 24 hours from now.' };
-    if (t > now + sevenDays) return { success: false, error: 'All proposed times must be within the next 7 days.' };
-  }
-
-  // Calculate expires_at: earliest proposed time - 12 hours
-  const sortedTimes = proposedTimes.map(t => new Date(t).getTime()).sort((a, b) => a - b);
-  const expiresAt = new Date(sortedTimes[0] - 12 * 60 * 60 * 1000).toISOString();
+  // expires_at = 72 hours from now
+  const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
 
   // Insert
   const { data: request, error } = await supabase
@@ -210,7 +201,7 @@ export async function createConnectionRequest(
       nanny_id: nannyId,
       position_id: position?.id ?? null,
       status: 'pending',
-      proposed_times: proposedTimes,
+      proposed_times: [],
       message: message || null,
       expires_at: expiresAt,
     })
@@ -237,7 +228,7 @@ export async function createConnectionRequest(
       parentId,
       nannyId,
       eventType: 'created',
-      eventData: { proposed_times: proposedTimes, message: message || null },
+      eventData: { message: message || null },
     });
 
     // Inbox message for nanny
@@ -245,7 +236,7 @@ export async function createConnectionRequest(
       userId: nanny.user_id,
       type: 'connection_request',
       title: 'New connection request',
-      body: 'A family would like to connect with you for a 15-minute intro call.',
+      body: 'A family would like to connect with you for a 15-minute intro.',
       actionUrl: '/nanny/inbox',
       referenceId: request.id,
       referenceType: 'connection_request',
@@ -272,7 +263,7 @@ export async function createConnectionRequest(
         subject: `New connection request from ${parentName}`,
         html: `<div style="${baseStyle}">
           <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
-          <p style="color: #374151; font-size: 16px; line-height: 1.6;">[TBD] INT-001 — New Connection Request. ${parentName} from ${parentSuburb} would like to connect for a 15-minute intro call. Review their position and respond before this request expires.</p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.6;">${parentName} from ${parentSuburb} would like to connect with you for a 15-minute intro. Review their request and respond within 3 days.</p>
           <p style="margin-top: 24px;"><a href="${appUrl}/nanny/inbox" style="${btnStyle}">View Request</a></p>
         </div>`,
         emailType: 'interview_request',
@@ -285,13 +276,12 @@ export async function createConnectionRequest(
   return { success: true, error: null, requestId: request.id };
 }
 
-// ── 2. Confirm Connection Request (Nanny accepts + selects time) ──
+// ── 2. Accept Connection Request (Nanny accepts with availability slots) ──
 
-export async function confirmConnectionRequest(
+export async function acceptConnectionRequest(
   requestId: string,
-  selectedTime: string
+  availableSlots: string[]
 ): Promise<{ success: boolean; error: string | null }> {
-  const supabase = createClient();
   const adminClient = createAdminClient();
 
   const nannyInfo = await getNannyId();
@@ -299,10 +289,38 @@ export async function confirmConnectionRequest(
     return { success: false, error: 'Not authenticated as nanny' };
   }
 
-  // Fetch request
-  const { data: request, error: fetchErr } = await supabase
+  // Validate available slots
+  if (!availableSlots || availableSlots.length < 5) {
+    return { success: false, error: 'Please select at least 5 available time slots.' };
+  }
+
+  // Validate format and extract unique brackets/days
+  const validBrackets = new Set(BRACKET_KEYS);
+  const selectedBrackets = new Set<string>();
+  const selectedDays = new Set<string>();
+
+  for (const slot of availableSlots) {
+    const parts = slot.split('_');
+    if (parts.length !== 2) return { success: false, error: `Invalid slot format: ${slot}` };
+    const [date, bracket] = parts;
+    if (!validBrackets.has(bracket as BracketKey)) return { success: false, error: `Invalid bracket: ${bracket}` };
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { success: false, error: `Invalid date format: ${date}` };
+    selectedBrackets.add(bracket);
+    selectedDays.add(date);
+  }
+
+  if (selectedBrackets.size < 4) {
+    return { success: false, error: 'Please select at least one slot from each time bracket (Morning, Midday, Afternoon, Evening).' };
+  }
+
+  if (selectedDays.size < 3) {
+    return { success: false, error: 'Please select slots across at least 3 different days.' };
+  }
+
+  // Fetch request (use adminClient to bypass RLS)
+  const { data: request, error: fetchErr } = await adminClient
     .from('connection_requests')
-    .select('id, parent_id, nanny_id, proposed_times, status')
+    .select('id, parent_id, nanny_id, status')
     .eq('id', requestId)
     .eq('nanny_id', nannyInfo.nannyId)
     .single();
@@ -315,19 +333,174 @@ export async function confirmConnectionRequest(
     return { success: false, error: 'This request is no longer pending.' };
   }
 
-  // Validate selectedTime is one of proposed_times
-  const proposedTimes = request.proposed_times as string[];
-  if (!proposedTimes.includes(selectedTime)) {
-    return { success: false, error: 'Selected time is not one of the proposed times.' };
+  const now = new Date().toISOString();
+  // Parent has 72 hours to pick a time
+  const newExpiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+
+  // Update request with available slots
+  const { error: updateErr } = await adminClient
+    .from('connection_requests')
+    .update({
+      status: 'accepted',
+      proposed_times: availableSlots,
+      responded_at: now,
+      expires_at: newExpiresAt,
+      updated_at: now,
+    })
+    .eq('id', requestId)
+    .eq('status', 'pending');
+
+  if (updateErr) {
+    console.error('[Connection] Accept error:', updateErr);
+    return { success: false, error: 'Failed to accept connection.' };
+  }
+
+  // Log event
+  await logConnectionEvent({
+    connectionRequestId: requestId,
+    parentId: request.parent_id,
+    nannyId: request.nanny_id,
+    eventType: 'accepted',
+  });
+
+  // Get nanny name for messages
+  const nannyEmailInfo = await getUserEmailInfo(nannyInfo.userId);
+  const nannyName = nannyEmailInfo ? nannyEmailInfo.firstName : 'Your nanny';
+
+  // Get parent user_id
+  const { data: parentData } = await adminClient
+    .from('parents')
+    .select('user_id')
+    .eq('id', request.parent_id)
+    .single();
+
+  if (parentData) {
+    // Inbox message for parent
+    await createInboxMessage({
+      userId: parentData.user_id,
+      type: 'connection_accepted',
+      title: `${nannyName} accepted your connection!`,
+      body: `${nannyName} has shared their available times. Pick a slot for your 15-minute intro.`,
+      actionUrl: '/parent/connections',
+      referenceId: requestId,
+      referenceType: 'connection_request',
+    });
+
+    // Email to parent: pick a time
+    const parentEmailInfo = await getUserEmailInfo(parentData.user_id);
+    if (parentEmailInfo) {
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://app-babybloom.vercel.app';
+      const baseStyle = `font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px;`;
+      const btnStyle = `background: #8B5CF6; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600;`;
+
+      sendEmail({
+        to: parentEmailInfo.email,
+        subject: `${nannyName} accepted your connection request!`,
+        html: `<div style="${baseStyle}">
+          <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
+          <p style="color: #374151; font-size: 16px; line-height: 1.6;">Great news! ${nannyName} has accepted your connection request and shared their available times. Check their availability and pick a slot for your 15-minute intro.</p>
+          <p style="color: #6B7280; font-size: 14px; margin-top: 8px;">You have 3 days to schedule a time.</p>
+          <p style="margin-top: 24px;"><a href="${appUrl}/parent/connections" style="${btnStyle}">Pick a Time</a></p>
+        </div>`,
+        emailType: 'interview_confirmed',
+        recipientUserId: parentData.user_id,
+      }).catch(err => console.error('[Connection] Accept email error:', err));
+    }
+  }
+
+  // Inbox message for nanny
+  await createInboxMessage({
+    userId: nannyInfo.userId,
+    type: 'connection_accepted_nanny',
+    title: 'Connection accepted',
+    body: 'You accepted this connection. Waiting for the family to schedule a call time.',
+    actionUrl: '/nanny/inbox',
+    referenceId: requestId,
+    referenceType: 'connection_request',
+  });
+
+  revalidatePath('/nanny/inbox');
+  revalidatePath('/parent/connections');
+  revalidatePath('/parent/inbox');
+  return { success: true, error: null };
+}
+
+// ── 3. Schedule Connection Time (Parent picks time from nanny's available brackets) ──
+
+export async function scheduleConnectionTime(
+  requestId: string,
+  date: string,
+  hour: number,
+  minute: number
+): Promise<{ success: boolean; error: string | null }> {
+  const adminClient = createAdminClient();
+
+  const parentId = await getParentId();
+  if (!parentId) {
+    return { success: false, error: 'Not authenticated as parent' };
+  }
+
+  // Validate inputs
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { success: false, error: 'Invalid date format.' };
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return { success: false, error: 'Invalid time.' };
+
+  // Determine which bracket this time falls into
+  const bracket = getBracketForHour(hour);
+  if (!bracket) return { success: false, error: 'Selected time is outside available brackets (8am-8pm).' };
+
+  // Validate time is within bracket range (not at the end hour itself)
+  const bracketDef = TIME_BRACKETS[bracket];
+  if (hour >= bracketDef.endHour) return { success: false, error: 'Selected time is outside the bracket range.' };
+
+  // Fetch request with proposed_times
+  const { data: request, error: fetchErr } = await adminClient
+    .from('connection_requests')
+    .select('id, parent_id, nanny_id, status, proposed_times')
+    .eq('id', requestId)
+    .eq('parent_id', parentId)
+    .single();
+
+  if (fetchErr || !request) {
+    return { success: false, error: 'Connection request not found.' };
+  }
+
+  if (request.status !== 'accepted') {
+    return { success: false, error: 'This connection is not ready to be scheduled.' };
+  }
+
+  // Validate the selected date+bracket matches one of the nanny's proposed_times
+  const slotKey = `${date}_${bracket}`;
+  if (!request.proposed_times || !request.proposed_times.includes(slotKey)) {
+    return { success: false, error: 'The selected time is not within the nanny\'s available slots.' };
+  }
+
+  // Construct UTC ISO string from Sydney date/time (server-side conversion)
+  const selectedTime = sydneyToUTC(date, hour, minute);
+
+  // Validate scheduled time is reasonable (24h–8d from now)
+  const t = new Date(selectedTime).getTime();
+  const now = Date.now();
+  if (t < now + 12 * 60 * 60 * 1000) return { success: false, error: 'Call time must be at least 12 hours from now.' };
+  if (t > now + 9 * 24 * 60 * 60 * 1000) return { success: false, error: 'Call time must be within the next 9 days.' };
+
+  // Get nanny's user_id
+  const { data: nannyData } = await adminClient
+    .from('nannies')
+    .select('user_id')
+    .eq('id', request.nanny_id)
+    .single();
+
+  if (!nannyData) {
+    return { success: false, error: 'Nanny not found.' };
   }
 
   // Get nanny's phone number
-  const phone = await getNannyPhone(nannyInfo.userId);
+  const phone = await getNannyPhone(nannyData.user_id);
   if (!phone) {
-    return { success: false, error: 'Your phone number is required to confirm. Please update your contact details in Verification.' };
+    return { success: false, error: 'Nanny phone number not available. Please contact support.' };
   }
 
-  const now = new Date().toISOString();
+  const nowIso = new Date().toISOString();
 
   // Update request
   const { error: updateErr } = await adminClient
@@ -335,17 +508,16 @@ export async function confirmConnectionRequest(
     .update({
       status: 'confirmed',
       confirmed_time: selectedTime,
-      confirmed_at: now,
+      confirmed_at: nowIso,
       nanny_phone_shared: phone,
-      responded_at: now,
-      updated_at: now,
+      updated_at: nowIso,
     })
     .eq('id', requestId)
-    .eq('status', 'pending');
+    .eq('status', 'accepted');
 
   if (updateErr) {
-    console.error('[Connection] Confirm error:', updateErr);
-    return { success: false, error: 'Failed to confirm connection.' };
+    console.error('[Connection] Schedule error:', updateErr);
+    return { success: false, error: 'Failed to schedule connection.' };
   }
 
   // Log event
@@ -357,27 +529,25 @@ export async function confirmConnectionRequest(
     eventData: { selected_time: selectedTime, phone_shared: phone },
   });
 
-  // Get user IDs for inbox + emails
-  const { data: parentData } = await adminClient
+  const nannyEmailInfo = await getUserEmailInfo(nannyData.user_id);
+  const nannyName = nannyEmailInfo ? `${nannyEmailInfo.firstName} ${nannyEmailInfo.lastName}` : 'Your nanny';
+
+  const confirmedDate = formatSydneyDate(selectedTime);
+
+  // Get parent user_id
+  const { data: parentUserData } = await adminClient
     .from('parents')
     .select('user_id')
     .eq('id', request.parent_id)
     .single();
 
-  const nannyEmailInfo = await getUserEmailInfo(nannyInfo.userId);
-  const nannyName = nannyEmailInfo ? `${nannyEmailInfo.firstName} ${nannyEmailInfo.lastName}` : 'Your nanny';
-
-  const confirmedDate = new Date(selectedTime).toLocaleDateString('en-AU', {
-    weekday: 'long', day: 'numeric', month: 'long', hour: 'numeric', minute: '2-digit',
-  });
-
-  if (parentData) {
+  if (parentUserData) {
     // Inbox message for parent
     await createInboxMessage({
-      userId: parentData.user_id,
+      userId: parentUserData.user_id,
       type: 'connection_confirmed',
-      title: `${nannyName} confirmed your intro call!`,
-      body: `Your intro call is set for ${confirmedDate}. Phone: ${phone}`,
+      title: `Intro call scheduled with ${nannyName}!`,
+      body: `Your intro is set for ${confirmedDate}. Phone: ${phone}`,
       actionUrl: '/parent/connections',
       referenceId: requestId,
       referenceType: 'connection_request',
@@ -385,7 +555,7 @@ export async function confirmConnectionRequest(
     });
 
     // INT-002 email to parent (with phone + time)
-    const parentEmailInfo = await getUserEmailInfo(parentData.user_id);
+    const parentEmailInfo = await getUserEmailInfo(parentUserData.user_id);
     if (parentEmailInfo) {
       const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://app-babybloom.vercel.app';
       const baseStyle = `font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px;`;
@@ -393,10 +563,10 @@ export async function confirmConnectionRequest(
 
       sendEmail({
         to: parentEmailInfo.email,
-        subject: `${nannyName} confirmed your intro call!`,
+        subject: `Intro call scheduled with ${nannyName}!`,
         html: `<div style="${baseStyle}">
           <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
-          <p style="color: #374151; font-size: 16px; line-height: 1.6;">[TBD] INT-002 — Connection Confirmed (to parent). ${nannyName} has confirmed your 15-minute intro call.</p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.6;">Your 15-minute intro with ${nannyName} is confirmed.</p>
           <div style="background: #F0FDF4; border: 1px solid #86EFAC; border-radius: 8px; padding: 16px; margin: 16px 0;">
             <p style="margin: 0; font-weight: 600; color: #166534;">Call Time: ${confirmedDate}</p>
             <p style="margin: 8px 0 0; font-weight: 600; color: #166534;">Phone: ${phone}</p>
@@ -405,17 +575,17 @@ export async function confirmConnectionRequest(
           <p style="margin-top: 24px;"><a href="${appUrl}/parent/connections" style="${btnStyle}">View Details</a></p>
         </div>`,
         emailType: 'interview_confirmed',
-        recipientUserId: parentData.user_id,
+        recipientUserId: parentUserData.user_id,
       }).catch(err => console.error('[Connection] INT-002 email error:', err));
     }
   }
 
   // Inbox message for nanny
   await createInboxMessage({
-    userId: nannyInfo.userId,
+    userId: nannyData.user_id,
     type: 'connection_confirmed_nanny',
-    title: 'Intro call confirmed',
-    body: `Your intro call is set for ${confirmedDate}. Your phone number has been shared with the family.`,
+    title: 'Intro call scheduled',
+    body: `Your intro is set for ${confirmedDate}. Your phone number has been shared with the family.`,
     actionUrl: '/nanny/inbox',
     referenceId: requestId,
     referenceType: 'connection_request',
@@ -423,7 +593,7 @@ export async function confirmConnectionRequest(
 
   // INT-003 email to nanny
   if (nannyEmailInfo) {
-    const parentProfile = parentData ? await getUserEmailInfo(parentData.user_id) : null;
+    const parentProfile = parentUserData ? await getUserEmailInfo(parentUserData.user_id) : null;
     const parentName = parentProfile ? `${parentProfile.firstName} ${parentProfile.lastName}` : 'the family';
     const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://app-babybloom.vercel.app';
     const baseStyle = `font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px;`;
@@ -431,14 +601,14 @@ export async function confirmConnectionRequest(
 
     sendEmail({
       to: nannyEmailInfo.email,
-      subject: `Intro call confirmed with ${parentName}`,
+      subject: `Intro call scheduled with ${parentName}`,
       html: `<div style="${baseStyle}">
         <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
-        <p style="color: #374151; font-size: 16px; line-height: 1.6;">[TBD] INT-003 — Connection Confirmed (to nanny). Your 15-minute intro call with ${parentName} is confirmed for ${confirmedDate}. Your phone number (${phone}) has been shared — they will call you at the confirmed time.</p>
+        <p style="color: #374151; font-size: 16px; line-height: 1.6;">Your 15-minute intro with ${parentName} is confirmed for ${confirmedDate}. Your phone number (${phone}) has been shared — they will call you at the confirmed time.</p>
         <p style="margin-top: 24px;"><a href="${appUrl}/nanny/inbox" style="${btnStyle}">View in Inbox</a></p>
       </div>`,
       emailType: 'interview_confirmed',
-      recipientUserId: nannyInfo.userId,
+      recipientUserId: nannyData.user_id,
     }).catch(err => console.error('[Connection] INT-003 email error:', err));
   }
 
@@ -448,13 +618,12 @@ export async function confirmConnectionRequest(
   return { success: true, error: null };
 }
 
-// ── 3. Decline Connection Request ──
+// ── 4. Decline Connection Request (Nanny) ──
 
 export async function declineConnectionRequest(
   requestId: string,
   reason?: string
 ): Promise<{ success: boolean; error: string | null }> {
-  const supabase = createClient();
   const adminClient = createAdminClient();
 
   const nannyInfo = await getNannyId();
@@ -464,7 +633,7 @@ export async function declineConnectionRequest(
 
   const now = new Date().toISOString();
 
-  const { data: request, error: fetchErr } = await supabase
+  const { data: request, error: fetchErr } = await adminClient
     .from('connection_requests')
     .select('id, parent_id, nanny_id, status')
     .eq('id', requestId)
@@ -537,7 +706,7 @@ export async function declineConnectionRequest(
         subject: `Update on your connection with ${nannyName}`,
         html: `<div style="${baseStyle}">
           <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
-          <p style="color: #374151; font-size: 16px; line-height: 1.6;">[TBD] INT-004 — Connection Declined (to parent). Unfortunately, ${nannyName} is unable to connect at this time. This could be due to scheduling or availability.</p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.6;">Unfortunately, ${nannyName} is unable to connect at this time. This could be due to scheduling or availability.</p>
           <p style="margin-top: 24px;"><a href="${appUrl}/parent/browse" style="${btnStyle}">Browse More Nannies</a></p>
         </div>`,
         emailType: 'interview_request',
@@ -552,39 +721,49 @@ export async function declineConnectionRequest(
   return { success: true, error: null };
 }
 
-// ── 4. Cancel Connection Request (Parent) ──
+// ── 5. Cancel Connection Request (Parent or Nanny, any active status) ──
 
 export async function cancelConnectionRequest(
   requestId: string
 ): Promise<{ success: boolean; error: string | null }> {
-  const supabase = createClient();
   const adminClient = createAdminClient();
 
+  // Determine if caller is parent or nanny
   const parentId = await getParentId();
-  if (!parentId) {
-    return { success: false, error: 'Not authenticated as parent' };
+  const nannyInfo = await getNannyId();
+
+  if (!parentId && !nannyInfo) {
+    return { success: false, error: 'Not authenticated' };
   }
 
-  const { data: request, error: fetchErr } = await supabase
+  // Fetch request
+  const { data: request, error: fetchErr } = await adminClient
     .from('connection_requests')
     .select('id, parent_id, nanny_id, status')
     .eq('id', requestId)
-    .eq('parent_id', parentId)
     .single();
 
   if (fetchErr || !request) {
     return { success: false, error: 'Connection request not found.' };
   }
 
-  if (request.status !== 'pending') {
-    return { success: false, error: 'Only pending requests can be cancelled.' };
+  // Verify ownership
+  const isParent = parentId === request.parent_id;
+  const isNanny = nannyInfo?.nannyId === request.nanny_id;
+
+  if (!isParent && !isNanny) {
+    return { success: false, error: 'You do not have permission to cancel this request.' };
   }
 
-  const { error: updateErr } = await supabase
+  // Allow cancel on pending, accepted, or confirmed
+  if (!['pending', 'accepted', 'confirmed'].includes(request.status)) {
+    return { success: false, error: 'This request cannot be cancelled.' };
+  }
+
+  const { error: updateErr } = await adminClient
     .from('connection_requests')
     .update({ status: 'cancelled', updated_at: new Date().toISOString() })
-    .eq('id', requestId)
-    .eq('status', 'pending');
+    .eq('id', requestId);
 
   if (updateErr) {
     console.error('[Connection] Cancel error:', updateErr);
@@ -597,25 +776,48 @@ export async function cancelConnectionRequest(
     parentId: request.parent_id,
     nannyId: request.nanny_id,
     eventType: 'cancelled',
+    eventData: { cancelled_by: isParent ? 'parent' : 'nanny' },
   });
 
-  // Inbox message for nanny
-  const { data: nannyData } = await adminClient
-    .from('nannies')
-    .select('user_id')
-    .eq('id', request.nanny_id)
-    .single();
+  // Inbox message for the OTHER party
+  if (isParent) {
+    const { data: nannyData } = await adminClient
+      .from('nannies')
+      .select('user_id')
+      .eq('id', request.nanny_id)
+      .single();
 
-  if (nannyData) {
-    await createInboxMessage({
-      userId: nannyData.user_id,
-      type: 'connection_cancelled',
-      title: 'Connection request cancelled',
-      body: 'A family has cancelled their connection request.',
-      actionUrl: '/nanny/inbox',
-      referenceId: requestId,
-      referenceType: 'connection_request',
-    });
+    if (nannyData) {
+      await createInboxMessage({
+        userId: nannyData.user_id,
+        type: 'connection_cancelled',
+        title: 'Connection request cancelled',
+        body: 'A family has cancelled their connection request.',
+        actionUrl: '/nanny/inbox',
+        referenceId: requestId,
+        referenceType: 'connection_request',
+      });
+    }
+  } else {
+    const { data: parentData } = await adminClient
+      .from('parents')
+      .select('user_id')
+      .eq('id', request.parent_id)
+      .single();
+
+    if (parentData) {
+      const nannyEmailInfo = nannyInfo ? await getUserEmailInfo(nannyInfo.userId) : null;
+      const nannyName = nannyEmailInfo ? nannyEmailInfo.firstName : 'The nanny';
+      await createInboxMessage({
+        userId: parentData.user_id,
+        type: 'connection_cancelled',
+        title: 'Connection cancelled',
+        body: `${nannyName} has cancelled this connection.`,
+        actionUrl: '/parent/connections',
+        referenceId: requestId,
+        referenceType: 'connection_request',
+      });
+    }
   }
 
   revalidatePath('/parent/connections');
@@ -623,10 +825,9 @@ export async function cancelConnectionRequest(
   return { success: true, error: null };
 }
 
-// ── 5. Get Parent Connection Requests ──
+// ── 6. Get Parent Connection Requests ──
 
 export async function getParentConnectionRequests(): Promise<{ data: ConnectionRequestWithDetails[]; error: string | null }> {
-  const supabase = createClient();
   const adminClient = createAdminClient();
 
   const parentId = await getParentId();
@@ -637,22 +838,9 @@ export async function getParentConnectionRequests(): Promise<{ data: ConnectionR
   // Lazy expire stale requests
   await expireStaleRequests(adminClient, { parent_id: parentId });
 
-  const { data, error } = await supabase
+  const { data, error } = await adminClient
     .from('connection_requests')
-    .select(`
-      *,
-      nannies!inner (
-        id,
-        user_id,
-        hourly_rate_min,
-        user_profiles!inner (
-          first_name,
-          last_name,
-          suburb,
-          profile_picture_url
-        )
-      )
-    `)
+    .select('*')
     .eq('parent_id', parentId)
     .order('created_at', { ascending: false });
 
@@ -661,32 +849,51 @@ export async function getParentConnectionRequests(): Promise<{ data: ConnectionR
     return { data: [], error: 'Failed to fetch connection requests.' };
   }
 
-  const requests: ConnectionRequestWithDetails[] = (data || []).map((req) => {
-    const profile = req.nannies.user_profiles as unknown as {
-      first_name: string; last_name: string; suburb: string; profile_picture_url: string | null;
-    };
+  if (!data || data.length === 0) {
+    return { data: [], error: null };
+  }
+
+  // Fetch nanny details separately
+  const nannyIds = Array.from(new Set(data.map(r => r.nanny_id)));
+
+  const { data: nannies } = await adminClient
+    .from('nannies')
+    .select('id, user_id, hourly_rate_min')
+    .in('id', nannyIds);
+
+  const nannyMap = new Map((nannies || []).map(n => [n.id, n]));
+  const userIds = (nannies || []).map(n => n.user_id);
+
+  const { data: profiles } = await adminClient
+    .from('user_profiles')
+    .select('user_id, first_name, last_name, suburb, profile_picture_url')
+    .in('user_id', userIds);
+
+  const profileMap = new Map((profiles || []).map(p => [p.user_id, p]));
+
+  const requests: ConnectionRequestWithDetails[] = data.map((req) => {
+    const nanny = nannyMap.get(req.nanny_id);
+    const profile = nanny ? profileMap.get(nanny.user_id) : null;
     return {
       ...req,
       nanny: {
-        id: req.nannies.id,
-        user_id: req.nannies.user_id,
-        first_name: profile.first_name,
-        last_name: profile.last_name,
-        suburb: profile.suburb,
-        hourly_rate_min: req.nannies.hourly_rate_min,
-        profile_picture_url: profile.profile_picture_url,
+        id: req.nanny_id,
+        user_id: nanny?.user_id || '',
+        first_name: profile?.first_name || 'Unknown',
+        last_name: profile?.last_name || '',
+        suburb: profile?.suburb || '',
+        hourly_rate_min: nanny?.hourly_rate_min || null,
+        profile_picture_url: profile?.profile_picture_url || null,
       },
-      nannies: undefined,
     } as ConnectionRequestWithDetails;
   });
 
   return { data: requests, error: null };
 }
 
-// ── 6. Get Nanny Connection Requests ──
+// ── 7. Get Nanny Connection Requests ──
 
 export async function getNannyConnectionRequests(): Promise<{ data: ConnectionRequestWithDetails[]; error: string | null }> {
-  const supabase = createClient();
   const adminClient = createAdminClient();
 
   const nannyInfo = await getNannyId();
@@ -697,20 +904,9 @@ export async function getNannyConnectionRequests(): Promise<{ data: ConnectionRe
   // Lazy expire stale requests
   await expireStaleRequests(adminClient, { nanny_id: nannyInfo.nannyId });
 
-  const { data, error } = await supabase
+  const { data, error } = await adminClient
     .from('connection_requests')
-    .select(`
-      *,
-      parents!inner (
-        id,
-        user_id,
-        user_profiles!inner (
-          first_name,
-          last_name,
-          suburb
-        )
-      )
-    `)
+    .select('*')
     .eq('nanny_id', nannyInfo.nannyId)
     .order('created_at', { ascending: false });
 
@@ -719,12 +915,35 @@ export async function getNannyConnectionRequests(): Promise<{ data: ConnectionRe
     return { data: [], error: 'Failed to fetch connection requests.' };
   }
 
-  // Enrich with position data
+  if (!data || data.length === 0) {
+    return { data: [], error: null };
+  }
+
+  // Fetch parent user_ids from parents table
+  const parentIds = Array.from(new Set(data.map(r => r.parent_id)));
+  const { data: parents } = await adminClient
+    .from('parents')
+    .select('id, user_id')
+    .in('id', parentIds);
+
+  const parentMap = new Map((parents || []).map(p => [p.id, p]));
+  const parentUserIds = (parents || []).map(p => p.user_id);
+
+  // Fetch profiles using user_ids
+  const { data: profiles } = await adminClient
+    .from('user_profiles')
+    .select('user_id, first_name, last_name, suburb')
+    .in('user_id', parentUserIds);
+
+  const profileMap = new Map(
+    (profiles || []).map(p => [p.user_id, p])
+  );
+
+  // Enrich with parent + position data
   const requests: ConnectionRequestWithDetails[] = await Promise.all(
-    (data || []).map(async (req) => {
-      const profile = req.parents.user_profiles as unknown as {
-        first_name: string; last_name: string; suburb: string;
-      };
+    data.map(async (req) => {
+      const parent = parentMap.get(req.parent_id);
+      const profile = parent ? profileMap.get(parent.user_id) : null;
 
       let position = null;
       if (req.position_id) {
@@ -734,14 +953,13 @@ export async function getNannyConnectionRequests(): Promise<{ data: ConnectionRe
       return {
         ...req,
         parent: {
-          id: req.parents.id,
-          user_id: req.parents.user_id,
-          first_name: profile.first_name,
-          last_name: profile.last_name,
-          suburb: profile.suburb,
+          id: req.parent_id,
+          user_id: parent?.user_id || '',
+          first_name: profile?.first_name || 'Unknown',
+          last_name: profile?.last_name || '',
+          suburb: profile?.suburb || '',
         },
         position,
-        parents: undefined,
       } as ConnectionRequestWithDetails;
     })
   );

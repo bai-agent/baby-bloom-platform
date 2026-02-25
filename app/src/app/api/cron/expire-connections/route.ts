@@ -29,22 +29,24 @@ export async function GET(request: NextRequest) {
   const baseStyle = `font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px;`;
   const btnStyle = `background: #8B5CF6; color: white; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600;`;
 
-  // Find all pending requests past expiry
+  // Find all pending/accepted requests past expiry
   const { data: stale } = await supabase
     .from('connection_requests')
-    .select('id, parent_id, nanny_id')
-    .eq('status', 'pending')
+    .select('id, parent_id, nanny_id, status')
+    .in('status', ['pending', 'accepted'])
     .lt('expires_at', now);
 
   let expired = 0;
 
   for (const req of stale ?? []) {
+    const wasAccepted = req.status === 'accepted';
+
     // Update to expired
     const { error } = await supabase
       .from('connection_requests')
       .update({ status: 'expired', updated_at: now })
       .eq('id', req.id)
-      .eq('status', 'pending'); // Optimistic lock
+      .in('status', ['pending', 'accepted']); // Optimistic lock
 
     if (error) continue; // Already expired by lazy expiry
 
@@ -77,7 +79,9 @@ export async function GET(request: NextRequest) {
         userId: parentData.user_id,
         type: 'connection_expired',
         title: 'Connection request expired',
-        body: 'Your connection request has expired as the nanny did not respond in time.',
+        body: wasAccepted
+          ? 'Your accepted connection has expired because a call time was not scheduled in time.'
+          : 'Your connection request has expired as the nanny did not respond in time.',
         actionUrl: '/parent/connections',
         referenceId: req.id,
         referenceType: 'connection_request',
@@ -104,8 +108,10 @@ export async function GET(request: NextRequest) {
       await createInboxMessage({
         userId: nannyData.user_id,
         type: 'connection_expired',
-        title: 'Missed connection request',
-        body: 'A connection request has expired. Responding promptly helps families find the right nanny.',
+        title: wasAccepted ? 'Accepted connection expired' : 'Missed connection request',
+        body: wasAccepted
+          ? 'An accepted connection has expired because the family did not schedule a call time in time.'
+          : 'A connection request has expired. Responding promptly helps families find the right nanny.',
         actionUrl: '/nanny/inbox',
         referenceId: req.id,
         referenceType: 'connection_request',

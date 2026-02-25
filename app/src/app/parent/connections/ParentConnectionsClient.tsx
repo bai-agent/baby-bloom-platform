@@ -3,21 +3,24 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
   ConnectionRequestWithDetails,
   cancelConnectionRequest,
+  scheduleConnectionTime,
 } from "@/lib/actions/connection";
+import { formatSydneyDate, TIME_BRACKETS, BRACKET_KEYS, getBracketTimeOptions } from "@/lib/timezone";
 import {
-  MapPin,
   Clock,
   Phone,
   Loader2,
   Check,
   X,
   Calendar,
-  DollarSign,
+  UserCheck,
+  ChevronRight,
+  PhoneCall,
 } from "lucide-react";
 
 function formatTimeLeft(expiresAt: string | null): { text: string; urgent: boolean } {
@@ -32,24 +35,16 @@ function formatTimeLeft(expiresAt: string | null): { text: string; urgent: boole
   return { text: `${days}d ${hours % 24}h left`, urgent: false };
 }
 
-function formatDate(date: string): string {
-  return new Date(date).toLocaleDateString("en-AU", {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
-
 interface ParentConnectionsClientProps {
   requests: ConnectionRequestWithDetails[];
 }
 
 export function ParentConnectionsClient({ requests }: ParentConnectionsClientProps) {
   const router = useRouter();
+  const [selectedRequest, setSelectedRequest] = useState<ConnectionRequestWithDetails | null>(null);
 
   const confirmed = requests.filter((r) => r.status === "confirmed");
+  const accepted = requests.filter((r) => r.status === "accepted");
   const pending = requests.filter((r) => r.status === "pending");
   const past = requests.filter((r) =>
     ["declined", "cancelled", "expired"].includes(r.status)
@@ -57,16 +52,51 @@ export function ParentConnectionsClient({ requests }: ParentConnectionsClientPro
 
   return (
     <div className="space-y-8">
-      {/* Confirmed */}
+      {/* Detail Modal */}
+      {selectedRequest && (
+        <ConnectionDetailModal
+          request={selectedRequest}
+          onClose={() => setSelectedRequest(null)}
+          onAction={() => {
+            setSelectedRequest(null);
+            router.refresh();
+          }}
+        />
+      )}
+
+      {/* Confirmed Intros */}
       {confirmed.length > 0 && (
         <section className="space-y-4">
           <h2 className="flex items-center gap-2 text-lg font-semibold text-green-700">
             <Check className="h-5 w-5" />
-            Confirmed ({confirmed.length})
+            Upcoming Intros ({confirmed.length})
           </h2>
-          <div className="grid gap-4">
+          <div className="grid gap-3">
             {confirmed.map((req) => (
-              <ConfirmedCard key={req.id} request={req} />
+              <ConnectionTile
+                key={req.id}
+                request={req}
+                onClick={() => setSelectedRequest(req)}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Schedule Intro — Accepted by nanny */}
+      {accepted.length > 0 && (
+        <section className="space-y-4">
+          <h2 className="flex items-center gap-2 text-lg font-semibold text-blue-700">
+            <UserCheck className="h-5 w-5" />
+            Schedule Intro ({accepted.length})
+          </h2>
+          <div className="grid gap-3">
+            {accepted.map((req) => (
+              <ConnectionTile
+                key={req.id}
+                request={req}
+                onClick={() => setSelectedRequest(req)}
+              />
             ))}
           </div>
         </section>
@@ -79,12 +109,12 @@ export function ParentConnectionsClient({ requests }: ParentConnectionsClientPro
             <Clock className="h-5 w-5" />
             Awaiting Response ({pending.length})
           </h2>
-          <div className="grid gap-4">
+          <div className="grid gap-3">
             {pending.map((req) => (
-              <PendingCard
+              <ConnectionTile
                 key={req.id}
                 request={req}
-                onCancelled={() => router.refresh()}
+                onClick={() => setSelectedRequest(req)}
               />
             ))}
           </div>
@@ -99,7 +129,11 @@ export function ParentConnectionsClient({ requests }: ParentConnectionsClientPro
           </h2>
           <div className="grid gap-2">
             {past.map((req) => (
-              <PastCard key={req.id} request={req} />
+              <ConnectionTile
+                key={req.id}
+                request={req}
+                onClick={() => setSelectedRequest(req)}
+              />
             ))}
           </div>
         </section>
@@ -108,84 +142,183 @@ export function ParentConnectionsClient({ requests }: ParentConnectionsClientPro
   );
 }
 
-// ── Confirmed Card ──
+// ── Connection Tile ──
 
-function ConfirmedCard({ request }: { request: ConnectionRequestWithDetails }) {
+function ConnectionTile({
+  request,
+  onClick,
+}: {
+  request: ConnectionRequestWithDetails;
+  onClick: () => void;
+}) {
+  const { text: timeLeft, urgent } = formatTimeLeft(request.expires_at);
+  const isPending = request.status === "pending";
+  const isAccepted = request.status === "accepted";
+  const isConfirmed = request.status === "confirmed";
+  const isPast = ["declined", "cancelled", "expired"].includes(request.status);
+
+  const borderColor = isPending
+    ? "border-amber-200"
+    : isAccepted
+    ? "border-blue-200"
+    : isConfirmed
+    ? "border-green-200"
+    : "border-slate-200";
+
+  const statusConfig: Record<string, { label: string; style: string }> = {
+    declined: { label: "Declined", style: "bg-red-100 text-red-800" },
+    cancelled: { label: "Cancelled", style: "bg-slate-100 text-slate-600" },
+    expired: { label: "Expired", style: "bg-amber-100 text-amber-800" },
+  };
+
   return (
-    <Card className="border-green-200 bg-green-50">
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-green-100">
-              <span className="text-sm font-semibold text-green-700">
+    <button
+      onClick={onClick}
+      className={`w-full text-left rounded-lg border ${borderColor} bg-white p-4 hover:bg-slate-50 transition-colors cursor-pointer ${isPast ? "opacity-75" : ""}`}
+    >
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3 min-w-0">
+          {request.nanny?.profile_picture_url ? (
+            <img
+              src={request.nanny.profile_picture_url}
+              alt=""
+              className="h-10 w-10 rounded-full object-cover flex-shrink-0"
+            />
+          ) : (
+            <div className={`flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-full ${isConfirmed ? "bg-green-100" : isAccepted ? "bg-blue-100" : "bg-violet-100"}`}>
+              <span className={`text-sm font-semibold ${isConfirmed ? "text-green-600" : isAccepted ? "text-blue-600" : "text-violet-600"}`}>
                 {request.nanny?.first_name?.[0]}
                 {request.nanny?.last_name?.[0]}
               </span>
             </div>
-            <div>
-              <CardTitle className="text-base">
-                {request.nanny?.first_name} {request.nanny?.last_name?.[0]}.
-              </CardTitle>
-              <CardDescription className="flex items-center gap-3">
-                <span className="flex items-center gap-1">
-                  <MapPin className="h-3 w-3" />
-                  {request.nanny?.suburb}
-                </span>
-                {request.nanny?.hourly_rate_min && (
-                  <span className="flex items-center gap-1">
-                    <DollarSign className="h-3 w-3" />
-                    ${request.nanny.hourly_rate_min}/hr
-                  </span>
-                )}
-              </CardDescription>
-            </div>
+          )}
+          <div className="min-w-0">
+            <p className="truncate text-sm font-medium text-slate-900">
+              {request.nanny?.first_name} {request.nanny?.last_name?.[0]}.
+            </p>
+            {isConfirmed && request.confirmed_time && (
+              <p className="flex items-center gap-1 text-xs text-green-600">
+                <Calendar className="h-3 w-3" />
+                {formatSydneyDate(request.confirmed_time)}
+              </p>
+            )}
+            {isPending && (
+              <p className="text-xs text-slate-500">Awaiting response</p>
+            )}
+            {isAccepted && (
+              <p className="text-xs text-blue-600">Pick a time</p>
+            )}
           </div>
-          <span className="rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-800">
-            Confirmed
-          </span>
         </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="rounded-lg border border-green-200 bg-white p-4 space-y-3">
-          {request.confirmed_time && (
-            <div className="flex items-center gap-2">
-              <Calendar className="h-4 w-4 text-green-600" />
-              <p className="text-sm font-medium text-green-800">
-                {formatDate(request.confirmed_time)}
-              </p>
-            </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {isAccepted && (
+            <span className="rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700">
+              Pick a Time
+            </span>
           )}
-          {request.nanny_phone_shared && (
-            <div className="flex items-center gap-2">
-              <Phone className="h-4 w-4 text-green-600" />
-              <p className="text-lg font-bold text-green-800">
-                {request.nanny_phone_shared}
-              </p>
-            </div>
+          {(isPending || isAccepted) && timeLeft && (
+            <span
+              className={`flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
+                urgent
+                  ? "bg-red-100 text-red-700"
+                  : "bg-amber-50 text-amber-700"
+              }`}
+            >
+              <Clock className="h-3 w-3" />
+              {timeLeft}
+            </span>
           )}
+          {isConfirmed && (
+            <span className="flex items-center gap-1 rounded-full bg-green-100 px-2 py-0.5 text-xs font-medium text-green-700">
+              <PhoneCall className="h-3 w-3" />
+              Confirmed
+            </span>
+          )}
+          {isPast && statusConfig[request.status] && (
+            <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${statusConfig[request.status].style}`}>
+              {statusConfig[request.status].label}
+            </span>
+          )}
+          <ChevronRight className="h-4 w-4 text-slate-300" />
         </div>
-        <p className="text-xs text-slate-500">
-          Please call {request.nanny?.first_name} at the confirmed time.
-        </p>
-      </CardContent>
-    </Card>
+      </div>
+    </button>
   );
 }
 
-// ── Pending Card ──
+// ── Connection Detail Modal ──
 
-function PendingCard({
+function ConnectionDetailModal({
   request,
-  onCancelled,
+  onClose,
+  onAction,
 }: {
   request: ConnectionRequestWithDetails;
-  onCancelled: () => void;
+  onClose: () => void;
+  onAction: () => void;
 }) {
-  const [cancelling, setCancelling] = useState(false);
-  const [showConfirmCancel, setShowConfirmCancel] = useState(false);
+  const [step, setStep] = useState<"details" | "schedule">("details");
+  const [selectedSlot, setSelectedSlot] = useState<string | null>(null);
+  const [selectedHour, setSelectedHour] = useState<number | null>(null);
+  const [selectedMinute, setSelectedMinute] = useState<number | null>(null);
+  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { text: timeLeft, urgent } = formatTimeLeft(request.expires_at);
-  const proposedTimes = request.proposed_times as string[];
+  const [showConfirmCancel, setShowConfirmCancel] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+
+  const isPending = request.status === "pending";
+  const isAccepted = request.status === "accepted";
+  const isConfirmed = request.status === "confirmed";
+  const isPast = ["declined", "cancelled", "expired"].includes(request.status);
+
+  // Availability grid data
+  const availableSlots = new Set(request.proposed_times || []);
+  const uniqueDates = Array.from(
+    new Set((request.proposed_times || []).map(s => s.split("_")[0]))
+  ).sort();
+
+  const formatDate = (dateStr: string) => {
+    const [y, m, d] = dateStr.split("-").map(Number);
+    const date = new Date(y, m - 1, d);
+    const weekday = date.toLocaleDateString("en-AU", { weekday: "short" });
+    const day = date.toLocaleDateString("en-AU", { day: "numeric", month: "short" });
+    return { weekday, day };
+  };
+
+  // Time picker
+  const selectedBracketKey = selectedSlot ? selectedSlot.split("_")[1] as keyof typeof TIME_BRACKETS : null;
+  const selectedDate = selectedSlot ? selectedSlot.split("_")[0] : null;
+  const timeGrid: { hour: number; minute: number; label: string }[][] = [];
+  if (selectedBracketKey) {
+    const options = getBracketTimeOptions(selectedBracketKey);
+    for (let row = 0; row < 3; row++) {
+      timeGrid.push(options.slice(row * 4, row * 4 + 4));
+    }
+  }
+
+  const hasSelectedTime = selectedHour !== null && selectedMinute !== null && selectedDate;
+
+  const getConfirmationLabel = () => {
+    if (!selectedDate || selectedHour === null || selectedMinute === null) return "";
+    const { weekday, day } = formatDate(selectedDate);
+    const period = selectedHour >= 12 ? "PM" : "AM";
+    const displayHour = selectedHour > 12 ? selectedHour - 12 : selectedHour === 0 ? 12 : selectedHour;
+    const displayMin = selectedMinute.toString().padStart(2, "0");
+    return `${weekday} ${day} at ${displayHour}:${displayMin} ${period} (Sydney time)`;
+  };
+
+  const handleSchedule = async () => {
+    if (!selectedDate || selectedHour === null || selectedMinute === null) return;
+    setSubmitting(true);
+    setError(null);
+    const result = await scheduleConnectionTime(request.id, selectedDate, selectedHour, selectedMinute);
+    setSubmitting(false);
+    if (!result.success) {
+      setError(result.error || "Failed to schedule.");
+    } else {
+      onAction();
+    }
+  };
 
   const handleCancel = async () => {
     setCancelling(true);
@@ -195,145 +328,330 @@ function PendingCard({
     if (!result.success) {
       setError(result.error || "Failed to cancel.");
     } else {
-      onCancelled();
+      onAction();
     }
   };
 
   return (
-    <Card className="border-amber-200">
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-100">
-              <span className="text-sm font-semibold text-amber-700">
-                {request.nanny?.first_name?.[0]}
-                {request.nanny?.last_name?.[0]}
-              </span>
-            </div>
-            <div>
-              <CardTitle className="text-base">
-                <Link
-                  href={`/nannies/${request.nanny_id}`}
-                  className="hover:text-violet-600 transition-colors"
-                >
-                  {request.nanny?.first_name} {request.nanny?.last_name?.[0]}.
-                </Link>
-              </CardTitle>
-              <CardDescription className="flex items-center gap-1">
-                <MapPin className="h-3 w-3" />
-                {request.nanny?.suburb}
-              </CardDescription>
-            </div>
-          </div>
-          <span
-            className={`flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${
-              urgent
-                ? "bg-red-100 text-red-700"
-                : "bg-amber-50 text-amber-700"
-            }`}
-          >
-            <Clock className="h-3 w-3" />
-            {timeLeft}
-          </span>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {/* Proposed Times */}
-        <div className="space-y-1">
-          <p className="text-xs font-medium text-slate-500 uppercase">Proposed Times</p>
-          {proposedTimes.map((time, i) => (
-            <p key={i} className="text-sm text-slate-700">
-              #{i + 1}: {formatDate(time)}
-            </p>
-          ))}
-        </div>
-
-        {request.message && (
-          <p className="text-sm text-slate-500 italic">&ldquo;{request.message}&rdquo;</p>
-        )}
-
-        {error && <p className="text-sm text-red-600">{error}</p>}
-
-        {/* Cancel */}
-        {!showConfirmCancel ? (
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-slate-500"
-            onClick={() => setShowConfirmCancel(true)}
-          >
-            Cancel Request
-          </Button>
-        ) : (
-          <div className="flex items-center gap-2">
-            <p className="text-sm text-slate-600">Cancel this request?</p>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setShowConfirmCancel(false)}
-            >
-              No
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              disabled={cancelling}
-              onClick={handleCancel}
-            >
-              {cancelling ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <Card className="w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              {request.nanny?.profile_picture_url ? (
+                <img
+                  src={request.nanny.profile_picture_url}
+                  alt=""
+                  className="h-10 w-10 rounded-full object-cover"
+                />
               ) : (
-                <>
-                  <X className="mr-1 h-3 w-3" />
-                  Yes, Cancel
-                </>
+                <div className={`flex h-10 w-10 items-center justify-center rounded-full ${isConfirmed ? "bg-green-100" : isAccepted ? "bg-blue-100" : "bg-violet-100"}`}>
+                  <span className={`text-sm font-semibold ${isConfirmed ? "text-green-700" : isAccepted ? "text-blue-700" : "text-violet-600"}`}>
+                    {request.nanny?.first_name?.[0]}
+                    {request.nanny?.last_name?.[0]}
+                  </span>
+                </div>
               )}
+              <div>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  {request.nanny?.first_name} {request.nanny?.last_name?.[0]}.
+                  <Link
+                    href={`/nannies/${request.nanny_id}`}
+                    className="text-xs font-normal text-violet-500 hover:text-violet-700 transition-colors"
+                  >
+                    View Profile
+                  </Link>
+                </CardTitle>
+              </div>
+            </div>
+            <Button variant="ghost" size="sm" onClick={onClose}>
+              <X className="h-4 w-4" />
             </Button>
           </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
+        </CardHeader>
+        <CardContent className="space-y-4">
 
-// ── Past Card ──
+          {/* ── Step 2: Schedule time picker ── */}
+          {isAccepted && step === "schedule" ? (
+            <div className="space-y-4">
+              {/* Availability grid — dates as rows, brackets as columns */}
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-slate-700 flex items-center gap-1.5">
+                  <Calendar className="h-3.5 w-3.5" />
+                  {request.nanny?.first_name}&apos;s availability (Sydney time)
+                </p>
 
-function PastCard({ request }: { request: ConnectionRequestWithDetails }) {
-  const statusConfig: Record<string, { label: string; style: string }> = {
-    declined: { label: "Declined", style: "bg-red-100 text-red-800" },
-    cancelled: { label: "Cancelled", style: "bg-slate-100 text-slate-600" },
-    expired: { label: "Expired", style: "bg-amber-100 text-amber-800" },
-  };
-  const config = statusConfig[request.status] || {
-    label: request.status,
-    style: "bg-slate-100 text-slate-600",
-  };
+                <div className="overflow-x-auto">
+                  <div className="min-w-[340px]">
+                    {/* Bracket column headers */}
+                    <div className="grid grid-cols-[90px_repeat(4,1fr)] gap-1 mb-1">
+                      <div />
+                      {BRACKET_KEYS.map(bracket => (
+                        <div key={bracket} className="text-center">
+                          <p className="text-xs font-semibold text-slate-600">{TIME_BRACKETS[bracket].label}</p>
+                          <p className="text-[10px] text-slate-400">{TIME_BRACKETS[bracket].sublabel}</p>
+                        </div>
+                      ))}
+                    </div>
 
-  return (
-    <Card className="opacity-60">
-      <CardContent className="flex items-center justify-between py-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100">
-            <span className="text-xs font-medium text-slate-500">
-              {request.nanny?.first_name?.[0]}
-              {request.nanny?.last_name?.[0]}
-            </span>
-          </div>
-          <div>
-            <p className="text-sm font-medium text-slate-700">
-              {request.nanny?.first_name} {request.nanny?.last_name?.[0]}.
-            </p>
+                    {/* Date rows */}
+                    {uniqueDates.map(date => {
+                      const { weekday, day } = formatDate(date);
+                      return (
+                        <div key={date} className="grid grid-cols-[90px_repeat(4,1fr)] gap-1 mb-1">
+                          <div className="flex items-center">
+                            <div>
+                              <p className="text-xs font-semibold text-slate-600">{weekday}</p>
+                              <p className="text-[10px] text-slate-400">{day}</p>
+                            </div>
+                          </div>
+                          {BRACKET_KEYS.map(bracket => {
+                            const slot = `${date}_${bracket}`;
+                            const isAvailable = availableSlots.has(slot);
+                            const isSelected = selectedSlot === slot;
+                            return (
+                              <button
+                                key={slot}
+                                type="button"
+                                disabled={!isAvailable}
+                                onClick={() => {
+                                  if (!isAvailable) return;
+                                  setSelectedSlot(isSelected ? null : slot);
+                                  setSelectedHour(null);
+                                  setSelectedMinute(null);
+                                }}
+                                className={`h-10 rounded-md border text-xs font-medium transition-colors ${
+                                  isSelected
+                                    ? "bg-violet-600 text-white border-violet-600 cursor-pointer"
+                                    : isAvailable
+                                    ? "bg-violet-50 text-violet-600 border-violet-200 hover:border-violet-400 cursor-pointer"
+                                    : "bg-slate-50 text-slate-200 border-slate-100 cursor-not-allowed"
+                                }`}
+                              >
+                                {isAvailable ? (isSelected ? "\u2713" : "") : ""}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* 4×3 time picker */}
+              {selectedSlot && selectedBracketKey && (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium text-slate-700">
+                    Select a time
+                  </p>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                    <div className="grid grid-cols-4 gap-1.5">
+                      {timeGrid.flat().map(opt => {
+                        const isSelected = selectedHour === opt.hour && selectedMinute === opt.minute;
+                        return (
+                          <button
+                            key={`${opt.hour}-${opt.minute}`}
+                            type="button"
+                            onClick={() => {
+                              setSelectedHour(opt.hour);
+                              setSelectedMinute(opt.minute);
+                            }}
+                            className={`py-2.5 rounded-md border text-sm font-medium transition-colors cursor-pointer ${
+                              isSelected
+                                ? "bg-violet-600 text-white border-violet-600"
+                                : "bg-white text-slate-700 border-slate-200 hover:border-violet-400"
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Confirmation */}
+              {hasSelectedTime && (
+                <div className="rounded-lg border border-green-200 bg-green-50 p-3">
+                  <p className="text-sm font-medium text-green-800">
+                    {getConfirmationLabel()}
+                  </p>
+                </div>
+              )}
+
+              {error && <p className="text-sm text-red-600">{error}</p>}
+
+              {/* Action buttons */}
+              <div className="flex gap-3">
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  onClick={() => {
+                    setStep("details");
+                    setSelectedSlot(null);
+                    setSelectedHour(null);
+                    setSelectedMinute(null);
+                    setError(null);
+                  }}
+                >
+                  Back
+                </Button>
+                <Button
+                  className="flex-1 bg-violet-500 hover:bg-violet-600"
+                  disabled={!hasSelectedTime || submitting}
+                  onClick={handleSchedule}
+                >
+                  {submitting ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Scheduling...
+                    </>
+                  ) : (
+                    <>
+                      <Calendar className="mr-2 h-4 w-4" />
+                      Confirm Intro
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+          ) : (
+
+          /* ── Step 1: Details view ── */
+          <>
+            {/* Status info */}
+            {isPending && (
+              <div className="space-y-3">
+                <span className="inline-block rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">
+                  Awaiting Response
+                </span>
+                <p className="text-sm text-slate-500">
+                  Waiting for {request.nanny?.first_name} to respond to your intro request...
+                </p>
+                {request.message && (
+                  <p className="text-sm text-slate-500 italic">&ldquo;{request.message}&rdquo;</p>
+                )}
+              </div>
+            )}
+
+            {isAccepted && (
+              <div className="space-y-3">
+                <span className="inline-block rounded-full bg-blue-50 px-2.5 py-1 text-xs font-medium text-blue-700">
+                  Accepted
+                </span>
+                <p className="text-sm text-slate-700">
+                  {request.nanny?.first_name} would love to have an intro with you! Pick a time that works for your 15-minute call.
+                </p>
+                <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2">
+                  <Phone className="h-4 w-4 text-blue-600 flex-shrink-0" />
+                  <p className="text-xs text-blue-700">
+                    Once you confirm a time, {request.nanny?.first_name}&apos;s phone number will be shared with you.
+                  </p>
+                </div>
+                <Button
+                  className="w-full bg-violet-500 hover:bg-violet-600"
+                  onClick={() => setStep("schedule")}
+                >
+                  <Calendar className="mr-2 h-4 w-4" />
+                  Pick a Time
+                </Button>
+              </div>
+            )}
+
+            {isConfirmed && (
+              <div className="space-y-3">
+                <span className="inline-block rounded-full bg-green-50 px-2.5 py-1 text-xs font-medium text-green-700">
+                  Intro Scheduled
+                </span>
+                {request.confirmed_time && (
+                  <div className="rounded-lg border border-green-200 bg-green-50 p-4 space-y-3">
+                    <div className="flex items-center gap-2">
+                      <Calendar className="h-4 w-4 text-green-600" />
+                      <p className="text-sm font-medium text-green-800">
+                        {formatSydneyDate(request.confirmed_time)} (AEST)
+                      </p>
+                    </div>
+                    {request.nanny_phone_shared && (
+                      <div className="flex items-center gap-2">
+                        <Phone className="h-4 w-4 text-green-600" />
+                        <p className="text-lg font-bold text-green-800">
+                          {request.nanny_phone_shared}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+                <p className="text-xs text-slate-500">
+                  Please call {request.nanny?.first_name} at the scheduled time. We encourage you to message them beforehand to connect.
+                </p>
+              </div>
+            )}
+
+            {isPast && (
+              <div className="space-y-2">
+                {request.status === "declined" && (
+                  <span className="inline-block rounded-full bg-red-50 px-2.5 py-1 text-xs font-medium text-red-700">Declined</span>
+                )}
+                {request.status === "cancelled" && (
+                  <span className="inline-block rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">Cancelled</span>
+                )}
+                {request.status === "expired" && (
+                  <span className="inline-block rounded-full bg-amber-100 px-2.5 py-1 text-xs font-medium text-amber-800">Expired</span>
+                )}
+              </div>
+            )}
+
+            {error && <p className="text-sm text-red-600">{error}</p>}
+
+            {/* Cancel — available on pending, accepted, confirmed */}
+            {!isPast && !showConfirmCancel && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-slate-500"
+                onClick={() => setShowConfirmCancel(true)}
+              >
+                {isConfirmed ? "Cancel Intro" : "Cancel Request"}
+              </Button>
+            )}
+
+            {!isPast && showConfirmCancel && (
+              <div className="flex items-center gap-2">
+                <p className="text-sm text-slate-600">Cancel this {isConfirmed ? "intro" : "request"}?</p>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowConfirmCancel(false)}
+                >
+                  No
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  disabled={cancelling}
+                  onClick={handleCancel}
+                >
+                  {cancelling ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <>
+                      <X className="mr-1 h-3 w-3" />
+                      Yes, Cancel
+                    </>
+                  )}
+                </Button>
+              </div>
+            )}
+
             <p className="text-xs text-slate-400">
-              {new Date(request.created_at).toLocaleDateString("en-AU")}
+              Sent {formatSydneyDate(request.created_at)}
             </p>
-          </div>
-        </div>
-        <span
-          className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${config.style}`}
-        >
-          {config.label}
-        </span>
-      </CardContent>
-    </Card>
+          </>
+          )}
+        </CardContent>
+      </Card>
+    </div>
   );
 }
