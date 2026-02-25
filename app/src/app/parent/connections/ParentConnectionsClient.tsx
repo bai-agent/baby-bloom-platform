@@ -249,7 +249,7 @@ function PendingCard({
         </div>
 
         {request.message && (
-          <p className="text-sm text-slate-500 italic">"{request.message}"</p>
+          <p className="text-sm text-slate-500 italic">&ldquo;{request.message}&rdquo;</p>
         )}
 
         {error && <p className="text-sm text-red-600">{error}</p>}
