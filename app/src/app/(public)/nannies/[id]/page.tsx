@@ -82,7 +82,6 @@ export default async function NannyProfilePage({
       nanny={nanny}
       isOwner={isOwner}
       isParent={isParent}
-      hasActivePosition={hasActivePosition}
       pendingRequestCount={pendingRequestCount}
       existingRequestStatus={existingRequestStatus}
     />
