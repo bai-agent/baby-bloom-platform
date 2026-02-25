@@ -17,7 +17,6 @@ export default async function NannyProfilePage({
   // Check auth state for connect button logic
   let isOwner = false;
   let isParent = false;
-  let hasActivePosition = false;
   let pendingRequestCount = 0;
   let existingRequestStatus: string | null = null;
 
@@ -38,17 +37,6 @@ export default async function NannyProfilePage({
 
         if (role?.role === 'parent') {
           isParent = true;
-
-          // Check for active position
-          const { data: position } = await supabase
-            .from('nanny_positions')
-            .select('id')
-            .eq('parent_id', user.id)
-            .eq('status', 'active')
-            .limit(1)
-            .maybeSingle();
-
-          hasActivePosition = !!position;
 
           // Count pending connection requests
           const { count } = await supabase
