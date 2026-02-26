@@ -4,11 +4,11 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { PositionForm } from "@/components/forms/PositionForm";
+import { PositionDetailView } from "../request/renderers/PositionDetailView";
 import { PositionWithChildren, closePosition } from "@/lib/actions/parent";
-import { Edit, X, AlertTriangle } from "lucide-react";
+import { AlertTriangle, ClipboardList } from "lucide-react";
 import { EmptyState } from "@/components/dashboard/EmptyState";
-import { ClipboardList } from "lucide-react";
+import type { TypeformFormData } from "../request/questions";
 
 interface PositionPageClientProps {
   position: PositionWithChildren | null;
@@ -16,7 +16,6 @@ interface PositionPageClientProps {
 
 export function PositionPageClient({ position }: PositionPageClientProps) {
   const router = useRouter();
-  const [showForm, setShowForm] = useState(false);
   const [showCloseConfirm, setShowCloseConfirm] = useState(false);
   const [closing, setClosing] = useState(false);
 
@@ -31,62 +30,41 @@ export function PositionPageClient({ position }: PositionPageClientProps) {
     }
   };
 
-  if (!position && !showForm) {
+  if (!position) {
     return (
       <EmptyState
         icon={ClipboardList}
-        title="No active position"
-        description="Create a nanny position to describe your family's needs. Our matching system will help connect you with qualified nannies."
-        actionLabel="Create Position"
-        onAction={() => setShowForm(true)}
+        title="No active childcare position"
+        description="Create a childcare position to describe your family's needs. Our matching system will help connect you with qualified nannies."
+        actionLabel="Create a Childcare Position"
+        actionHref="/parent/request"
       />
     );
   }
 
-  if (showForm) {
+  // Extract form_data from details JSONB
+  const details = position.details as Record<string, unknown> | null;
+  const formData = (details?.form_data ?? {}) as Partial<TypeformFormData>;
+
+  // If no form_data stored (old position), show fallback
+  if (!details?.form_data) {
     return (
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle>{position ? "Edit Position" : "Create Position"}</CardTitle>
-            <Button variant="ghost" size="sm" onClick={() => setShowForm(false)}>
-              <X className="h-4 w-4" />
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <PositionForm
-            initialData={position}
-            onSuccess={() => {
-              setShowForm(false);
-              router.refresh();
-            }}
-          />
-        </CardContent>
-      </Card>
+      <EmptyState
+        icon={ClipboardList}
+        title="Position needs updating"
+        description="Please recreate your childcare position using the new form to enable editing."
+        actionLabel="Recreate Position"
+        actionHref="/parent/request"
+      />
     );
   }
 
-  // Position exists - show edit/close buttons
   return (
     <>
-      <div className="flex gap-3">
-        <Button
-          onClick={() => setShowForm(true)}
-          variant="outline"
-        >
-          <Edit className="mr-2 h-4 w-4" />
-          Edit Position
-        </Button>
-        <Button
-          onClick={() => setShowCloseConfirm(true)}
-          variant="outline"
-          className="text-red-600 hover:bg-red-50 hover:text-red-700"
-        >
-          <X className="mr-2 h-4 w-4" />
-          Close Position
-        </Button>
-      </div>
+      <PositionDetailView
+        initialData={formData}
+        onClosePosition={() => setShowCloseConfirm(true)}
+      />
 
       {/* Close Confirmation Modal */}
       {showCloseConfirm && (
@@ -100,7 +78,8 @@ export function PositionPageClient({ position }: PositionPageClientProps) {
             </CardHeader>
             <CardContent className="space-y-4">
               <p className="text-slate-600">
-                Are you sure you want to close this position? This will:
+                Are you sure you want to close this childcare position? This
+                will:
               </p>
               <ul className="list-disc list-inside text-sm text-slate-600 space-y-1">
                 <li>Remove your position from matching</li>

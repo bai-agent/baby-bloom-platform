@@ -60,7 +60,7 @@ const nannyNavItems: NavItem[] = [
 const parentNavItems: NavItem[] = [
   { href: "/parent/dashboard", icon: Home, label: "Dashboard" },
   { href: "/parent/browse", icon: Search, label: "Browse Nannies" },
-  { href: "/parent/position", icon: ClipboardList, label: "My Position" },
+  { href: "/parent/position", icon: ClipboardList, label: "My Childcare" },
   { href: "/parent/request", icon: PlusCircle, label: "Nanny Request" },
   { href: "/parent/connections", icon: Link2, label: "Connections" },
   { href: "/parent/inbox", icon: Inbox, label: "Inbox" },
