@@ -47,6 +47,10 @@ export interface TypeformFormData {
   urgency: string | null;
   start_date: string | null;
 
+  // Dietary
+  dietary_restrictions_yn: string | null;
+  dietary_restrictions_details: string | null;
+
   // Notes (post-submission only)
   notes: string | null;
 }
@@ -201,7 +205,7 @@ export const QUESTIONS: QuestionConfig[] = [
     id: "child_needs",
     type: "boolean",
     question:
-      "Do any of your children have specific personal or dietary needs?",
+      "Do any of your children have any developmental conditions which will require specific attention from your nanny?",
     field: "child_needs_yn",
     options: [
       { value: "No", label: "No" },
@@ -213,9 +217,9 @@ export const QUESTIONS: QuestionConfig[] = [
       subField: "child_needs_details",
       subType: "textarea",
       subLabel:
-        "Tell us about your child's specific needs so we can match you with the right experience",
+        "Tell us about your child's developmental conditions so we can match you with the right experience",
       subPlaceholder:
-        "e.g. dietary requirements, sensory sensitivities, medical conditions...",
+        "e.g. autism spectrum, sensory sensitivities, speech delay, ADHD...",
     },
   },
 

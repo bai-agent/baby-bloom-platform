@@ -349,7 +349,7 @@ export function PositionDetailView({
           />
           <Row
             id="child_needs"
-            label="Specific needs"
+            label="Developmental conditions"
             display={
               data.child_needs_yn === "Yes" ? (
                 <span>
@@ -386,7 +386,53 @@ export function PositionDetailView({
                           child_needs_details: e.target.value || null,
                         })
                       }
-                      placeholder="Describe any specific needs..."
+                      placeholder="Describe any developmental conditions..."
+                      className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-800 min-h-[60px] resize-y outline-none focus:border-violet-500"
+                    />
+                    <DoneBtn />
+                  </>
+                )}
+              </div>
+            }
+          />
+          <Row
+            id="dietary_restrictions"
+            label="Dietary restrictions"
+            display={
+              data.dietary_restrictions_yn === "Yes" ? (
+                <span>
+                  Yes — {data.dietary_restrictions_details || "not specified"}
+                </span>
+              ) : (
+                (data.dietary_restrictions_yn ?? "No")
+              )
+            }
+            editor={
+              <div className="flex flex-col gap-2">
+                <Opts
+                  options={[
+                    { value: "No", label: "No" },
+                    { value: "Yes", label: "Yes" },
+                  ]}
+                  value={data.dietary_restrictions_yn ?? "No"}
+                  onSelect={(v) => {
+                    onUpdate({ dietary_restrictions_yn: v });
+                    if (v !== "Yes") {
+                      onUpdate({ dietary_restrictions_details: null });
+                      closeField();
+                    }
+                  }}
+                />
+                {data.dietary_restrictions_yn === "Yes" && (
+                  <>
+                    <textarea
+                      value={data.dietary_restrictions_details ?? ""}
+                      onChange={(e) =>
+                        onUpdate({
+                          dietary_restrictions_details: e.target.value || null,
+                        })
+                      }
+                      placeholder="e.g. nut allergy, gluten-free, dairy-free, vegetarian..."
                       className="w-full rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-800 min-h-[60px] resize-y outline-none focus:border-violet-500"
                     />
                     <DoneBtn />

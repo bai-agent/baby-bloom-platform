@@ -400,6 +400,8 @@ export async function saveTypeformPosition(
       has_pets_details: formData.has_pets_details ?? null,
       child_needs: formData.child_needs_yn === 'Yes',
       child_needs_details: formData.child_needs_details ?? null,
+      dietary_restrictions: formData.dietary_restrictions_yn === 'Yes',
+      dietary_restrictions_details: formData.dietary_restrictions_details ?? null,
       focus_type: formData.focus_type ?? null,
       support_type: formData.support_type ?? null,
       placement_duration: formData.placement_duration ?? null,
