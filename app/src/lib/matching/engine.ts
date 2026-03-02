@@ -153,7 +153,7 @@ export async function runMatchmaking(positionId: string): Promise<MatchingResult
           nannyPostcode.latitude,
           nannyPostcode.longitude
         );
-        distanceKm = Math.round(distanceKm * 10) / 10; // 1 decimal
+        distanceKm = Math.floor(distanceKm); // whole km, rounded down
       }
     }
 

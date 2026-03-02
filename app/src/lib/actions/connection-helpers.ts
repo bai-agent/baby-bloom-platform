@@ -3,13 +3,15 @@
 import { createAdminClient } from '@/lib/supabase/admin';
 
 /**
- * Get a nanny's phone number from the verifications table.
+ * Get a nanny's phone number from verifications table,
+ * falling back to user_profiles.mobile_number.
  * Uses admin client since phone is sensitive data behind RLS.
  */
 export async function getNannyPhone(nannyUserId: string): Promise<string | null> {
   const supabase = createAdminClient();
 
-  const { data, error } = await supabase
+  // Try verifications first
+  const { data } = await supabase
     .from('verifications')
     .select('phone_number')
     .eq('user_id', nannyUserId)
@@ -18,8 +20,16 @@ export async function getNannyPhone(nannyUserId: string): Promise<string | null>
     .limit(1)
     .single();
 
-  if (error || !data) return null;
-  return data.phone_number;
+  if (data?.phone_number) return data.phone_number;
+
+  // Fallback to user_profiles.mobile_number
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('mobile_number')
+    .eq('user_id', nannyUserId)
+    .single();
+
+  return profile?.mobile_number ?? null;
 }
 
 /**
