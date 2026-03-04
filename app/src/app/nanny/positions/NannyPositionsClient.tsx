@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import {
   MapPin, Clock, DollarSign, Calendar, Users, ChevronRight, Bell, Heart, Loader2, X, ClipboardList,
-  Baby, Phone, Mail, UtensilsCrossed, PawPrint, Pencil, Check, MoreVertical,
+  Baby, Phone, Mail, PawPrint, Pencil, Check, MoreVertical,
 } from "lucide-react";
 import { formatSydneyDate } from "@/lib/timezone";
 import { CONNECTION_STAGE, CONNECTION_STAGE_LABELS } from "@/lib/position/constants";
