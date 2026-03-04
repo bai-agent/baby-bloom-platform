@@ -1,6 +1,7 @@
 import { getPublicNannyProfile } from "@/lib/actions/nanny";
 import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { HIDDEN_CONNECTION_STAGES } from "@/lib/position/constants";
 import { NannyProfileView } from "./NannyProfileView";
 import { notFound } from "next/navigation";
 
@@ -20,6 +21,8 @@ export default async function NannyProfilePage({
   let isParent = false;
   let pendingRequestCount = 0;
   let existingRequestStatus: string | null = null;
+  let hasActivePlacement = false;
+  let isActiveNanny = false;
 
   try {
     const supabase = createClient();
@@ -57,17 +60,34 @@ export default async function NannyProfilePage({
 
             pendingRequestCount = count ?? 0;
 
-            // Check existing request with this nanny
+            // Check existing request with this nanny (exclude terminal stages)
             const { data: existing } = await adminClient
               .from('connection_requests')
-              .select('status')
+              .select('status, connection_stage')
               .eq('parent_id', parentRecord.id)
               .eq('nanny_id', nanny.nanny_id)
               .in('status', ['pending', 'accepted', 'confirmed'])
+              .not('connection_stage', 'in', `(${HIDDEN_CONNECTION_STAGES.join(',')})`)
               .limit(1)
               .maybeSingle();
 
             existingRequestStatus = existing?.status ?? null;
+
+            // Check if parent has any active placement
+            const { data: activePlacement } = await adminClient
+              .from('nanny_placements')
+              .select('id, nanny_id')
+              .eq('parent_id', parentRecord.id)
+              .eq('status', 'active')
+              .limit(1)
+              .maybeSingle();
+
+            if (activePlacement) {
+              hasActivePlacement = true;
+              if (activePlacement.nanny_id === nanny.nanny_id) {
+                isActiveNanny = true;
+              }
+            }
           }
         }
       }
@@ -83,6 +103,8 @@ export default async function NannyProfilePage({
       isParent={isParent}
       pendingRequestCount={pendingRequestCount}
       existingRequestStatus={existingRequestStatus}
+      hasActivePlacement={hasActivePlacement}
+      isActiveNanny={isActiveNanny}
     />
   );
 }

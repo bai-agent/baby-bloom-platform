@@ -26,8 +26,6 @@ const nannySignupSchema = z.object({
   confirmPassword: z.string(),
   firstName: z.string().min(1, "First name is required"),
   lastName: z.string().min(1, "Last name is required"),
-  suburb: z.string().min(1, "Suburb is required"),
-  postcode: z.string().regex(/^\d{4}$/, "Please enter a valid 4-digit postcode"),
 }).refine((data) => data.password === data.confirmPassword, {
   message: "Passwords do not match",
   path: ["confirmPassword"],
@@ -54,8 +52,6 @@ export default function NannySignupPage() {
       confirmPassword: "",
       firstName: "",
       lastName: "",
-      suburb: "",
-      postcode: "",
     },
   });
 
@@ -68,8 +64,6 @@ export default function NannySignupPage() {
     formData.append("password", data.password);
     formData.append("firstName", data.firstName);
     formData.append("lastName", data.lastName);
-    formData.append("suburb", data.suburb);
-    formData.append("postcode", data.postcode);
     formData.append("role", "nanny");
 
     const result = await signUp(formData);
@@ -165,47 +159,6 @@ export default function NannySignupPage() {
               </FormItem>
             )}
           />
-
-          <div className="grid grid-cols-2 gap-4">
-            <FormField
-              control={form.control}
-              name="suburb"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Suburb</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder="Sydney"
-                      autoComplete="address-level2"
-                      disabled={isLoading}
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-
-            <FormField
-              control={form.control}
-              name="postcode"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Postcode</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder="2000"
-                      autoComplete="postal-code"
-                      maxLength={4}
-                      disabled={isLoading}
-                      {...field}
-                    />
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
-            />
-          </div>
 
           <FormField
             control={form.control}

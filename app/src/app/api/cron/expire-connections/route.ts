@@ -3,6 +3,7 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { createInboxMessage, logConnectionEvent } from '@/lib/actions/connection-helpers';
 import { sendEmail } from '@/lib/email/resend';
 import { getUserEmailInfo } from '@/lib/email/helpers';
+import { CONNECTION_STAGE } from '@/lib/position/constants';
 
 /**
  * Cron endpoint: expires pending connection requests past their expires_at.
@@ -41,10 +42,16 @@ export async function GET(request: NextRequest) {
   for (const req of stale ?? []) {
     const wasAccepted = req.status === 'accepted';
 
-    // Update to expired
+    // Update to expired — set both status and connection_stage
     const { error } = await supabase
       .from('connection_requests')
-      .update({ status: 'expired', updated_at: now })
+      .update({
+        status: 'expired',
+        connection_stage: req.status === 'pending'
+          ? CONNECTION_STAGE.REQUEST_EXPIRED
+          : CONNECTION_STAGE.SCHEDULE_EXPIRED,
+        updated_at: now,
+      })
       .eq('id', req.id)
       .in('status', ['pending', 'accepted']); // Optimistic lock
 

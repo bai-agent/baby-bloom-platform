@@ -9,6 +9,9 @@ import { sendEmail } from '@/lib/email/resend';
 import { getUserEmailInfo } from '@/lib/email/helpers';
 import { sydneyToUTC, BRACKET_KEYS, TIME_BRACKETS, getBracketForHour, formatSydneyDate } from '@/lib/timezone';
 import type { BracketKey } from '@/lib/timezone';
+import { CONNECTION_STAGE, POSITION_STAGE, POSITION_STATUS, HIDDEN_CONNECTION_STAGES } from '@/lib/position/constants';
+import { funnelLog } from '@/lib/position/logger';
+import { checkPostIntroOutcomes } from './position-funnel';
 
 // ── Types ──
 
@@ -17,7 +20,7 @@ export interface ConnectionRequest {
   parent_id: string;
   nanny_id: string;
   position_id: string | null;
-  status: 'pending' | 'accepted' | 'confirmed' | 'declined' | 'cancelled' | 'expired';
+  status: 'pending' | 'accepted' | 'confirmed' | 'declined' | 'cancelled' | 'expired' | 'completed';
   proposed_times: string[];
   confirmed_time: string | null;
   confirmed_at: string | null;
@@ -27,6 +30,13 @@ export interface ConnectionRequest {
   expires_at: string | null;
   created_at: string;
   updated_at: string;
+
+  // Funnel (new — nullable until fully migrated)
+  connection_stage: number | null;
+  intro_outcome_reported_at: string | null;
+  fill_initiated_by: 'nanny' | 'parent' | null;
+  trial_date: string | null;
+  trial_reported_at: string | null;
 }
 
 export interface ConnectionRequestWithDetails extends ConnectionRequest {
@@ -51,7 +61,7 @@ export interface ConnectionRequestWithDetails extends ConnectionRequest {
 
 // ── Helper: get nanny ID for current user ──
 
-async function getNannyId(): Promise<{ nannyId: string; userId: string } | null> {
+export async function getNannyId(): Promise<{ nannyId: string; userId: string } | null> {
   const supabase = createClient();
   const { data: { user }, error: authError } = await supabase.auth.getUser();
   if (authError || !user) return null;
@@ -87,11 +97,17 @@ async function expireStaleRequests(
   const { data: stale } = await query;
 
   for (const req of stale ?? []) {
+    const expireStage = req.status === 'accepted'
+      ? CONNECTION_STAGE.SCHEDULE_EXPIRED
+      : CONNECTION_STAGE.REQUEST_EXPIRED;
+
     await supabase
       .from('connection_requests')
-      .update({ status: 'expired', updated_at: now })
+      .update({ status: 'expired', connection_stage: expireStage, updated_at: now })
       .eq('id', req.id)
       .in('status', ['pending', 'accepted']);
+
+    funnelLog('expire', req.id, `${req.status} → expired`, { connection_stage: expireStage });
 
     // Get user IDs for inbox messages
     const { data: nannyData } = await supabase
@@ -158,12 +174,12 @@ export async function createConnectionRequest(
     return { success: false, error: 'Not authenticated as parent' };
   }
 
-  // Check for active position (optional — not required for testing)
+  // Check for active/filled position
   const { data: position } = await supabase
     .from('nanny_positions')
-    .select('id')
+    .select('id, stage')
     .eq('parent_id', parentId)
-    .eq('status', 'active')
+    .in('status', ['active', 'filled'])
     .maybeSingle();
 
   // Max 5 pending requests
@@ -177,13 +193,14 @@ export async function createConnectionRequest(
     return { success: false, error: 'You have reached the maximum of 5 open connection requests. Wait for a response or cancel an existing request.' };
   }
 
-  // No duplicate with same nanny
+  // No duplicate with same nanny (exclude terminal stages so parents can reconnect)
   const { data: existing } = await supabase
     .from('connection_requests')
     .select('id')
     .eq('parent_id', parentId)
     .eq('nanny_id', nannyId)
     .in('status', ['pending', 'accepted', 'confirmed'])
+    .not('connection_stage', 'in', `(${HIDDEN_CONNECTION_STAGES.join(',')})`)
     .single();
 
   if (existing) {
@@ -201,6 +218,7 @@ export async function createConnectionRequest(
       nanny_id: nannyId,
       position_id: position?.id ?? null,
       status: 'pending',
+      connection_stage: CONNECTION_STAGE.REQUEST_SENT,
       proposed_times: [],
       message: message || null,
       expires_at: expiresAt,
@@ -213,8 +231,22 @@ export async function createConnectionRequest(
     return { success: false, error: 'Failed to create connection request.' };
   }
 
-  // Get nanny's user_id for inbox + email
+  funnelLog('createConnection', request.id, 'created', { nannyId, parentId, positionId: position?.id });
+
+  // Move position from Open → Connecting (if this is the first connection)
   const adminClient = createAdminClient();
+  if (position?.id && position.stage === POSITION_STAGE.OPEN) {
+    await adminClient
+      .from('nanny_positions')
+      .update({
+        stage: POSITION_STAGE.CONNECTING,
+        position_status: POSITION_STATUS.CONNECTING,
+      })
+      .eq('id', position.id)
+      .eq('stage', POSITION_STAGE.OPEN);
+
+    funnelLog('createConnection', request.id, 'position Open → Connecting', { positionId: position.id });
+  }
   const { data: nanny } = await adminClient
     .from('nannies')
     .select('user_id')
@@ -342,6 +374,7 @@ export async function acceptConnectionRequest(
     .from('connection_requests')
     .update({
       status: 'accepted',
+      connection_stage: CONNECTION_STAGE.ACCEPTED,
       proposed_times: availableSlots,
       responded_at: now,
       expires_at: newExpiresAt,
@@ -354,6 +387,8 @@ export async function acceptConnectionRequest(
     console.error('[Connection] Accept error:', updateErr);
     return { success: false, error: 'Failed to accept connection.' };
   }
+
+  funnelLog('accept', requestId, '0 → 10', { nannyId: nannyInfo.nannyId });
 
   // Log event
   await logConnectionEvent({
@@ -507,6 +542,7 @@ export async function scheduleConnectionTime(
     .from('connection_requests')
     .update({
       status: 'confirmed',
+      connection_stage: CONNECTION_STAGE.INTRO_SCHEDULED,
       confirmed_time: selectedTime,
       confirmed_at: nowIso,
       nanny_phone_shared: phone,
@@ -519,6 +555,8 @@ export async function scheduleConnectionTime(
     console.error('[Connection] Schedule error:', updateErr);
     return { success: false, error: 'Failed to schedule connection.' };
   }
+
+  funnelLog('schedule', requestId, '10 → 20', { confirmedTime: selectedTime });
 
   // Log event
   await logConnectionEvent({
@@ -547,7 +585,7 @@ export async function scheduleConnectionTime(
       userId: parentUserData.user_id,
       type: 'connection_confirmed',
       title: `Intro call scheduled with ${nannyName}!`,
-      body: `Your intro is set for ${confirmedDate}. Phone: ${phone}`,
+      body: `Your intro is set for ${confirmedDate}. View contact details on your dashboard.`,
       actionUrl: '/parent/connections',
       referenceId: requestId,
       referenceType: 'connection_request',
@@ -569,9 +607,8 @@ export async function scheduleConnectionTime(
           <p style="color: #374151; font-size: 16px; line-height: 1.6;">Your 15-minute intro with ${nannyName} is confirmed.</p>
           <div style="background: #F0FDF4; border: 1px solid #86EFAC; border-radius: 8px; padding: 16px; margin: 16px 0;">
             <p style="margin: 0; font-weight: 600; color: #166534;">Call Time: ${confirmedDate}</p>
-            <p style="margin: 8px 0 0; font-weight: 600; color: #166534;">Phone: ${phone}</p>
           </div>
-          <p style="color: #374151; font-size: 14px;">Please call ${nannyName} at the confirmed time.</p>
+          <p style="color: #374151; font-size: 14px;">Contact details are available on your Baby Bloom dashboard.</p>
           <p style="margin-top: 24px;"><a href="${appUrl}/parent/connections" style="${btnStyle}">View Details</a></p>
         </div>`,
         emailType: 'interview_confirmed',
@@ -585,7 +622,7 @@ export async function scheduleConnectionTime(
     userId: nannyData.user_id,
     type: 'connection_confirmed_nanny',
     title: 'Intro call scheduled',
-    body: `Your intro is set for ${confirmedDate}. Your phone number has been shared with the family.`,
+    body: `Your intro is set for ${confirmedDate}. Your contact details will be available to the family on their dashboard.`,
     actionUrl: '/nanny/inbox',
     referenceId: requestId,
     referenceType: 'connection_request',
@@ -604,7 +641,7 @@ export async function scheduleConnectionTime(
       subject: `Intro call scheduled with ${parentName}`,
       html: `<div style="${baseStyle}">
         <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
-        <p style="color: #374151; font-size: 16px; line-height: 1.6;">Your 15-minute intro with ${parentName} is confirmed for ${confirmedDate}. Your phone number (${phone}) has been shared — they will call you at the confirmed time.</p>
+        <p style="color: #374151; font-size: 16px; line-height: 1.6;">Your 15-minute intro with ${parentName} is confirmed for ${confirmedDate}. Your contact details will be available to the family on their dashboard.</p>
         <p style="margin-top: 24px;"><a href="${appUrl}/nanny/inbox" style="${btnStyle}">View in Inbox</a></p>
       </div>`,
       emailType: 'interview_confirmed',
@@ -652,6 +689,7 @@ export async function declineConnectionRequest(
     .from('connection_requests')
     .update({
       status: 'declined',
+      connection_stage: CONNECTION_STAGE.DECLINED,
       decline_reason: reason || null,
       responded_at: now,
       updated_at: now,
@@ -663,6 +701,8 @@ export async function declineConnectionRequest(
     console.error('[Connection] Decline error:', updateErr);
     return { success: false, error: 'Failed to decline connection.' };
   }
+
+  funnelLog('decline', requestId, '0 → 2', { nannyId: nannyInfo.nannyId });
 
   // Log event
   await logConnectionEvent({
@@ -755,20 +795,30 @@ export async function cancelConnectionRequest(
     return { success: false, error: 'You do not have permission to cancel this request.' };
   }
 
-  // Allow cancel on pending, accepted, or confirmed
-  if (!['pending', 'accepted', 'confirmed'].includes(request.status)) {
-    return { success: false, error: 'This request cannot be cancelled.' };
+  // Allow cancel unless already cancelled
+  if (request.status === 'cancelled') {
+    return { success: false, error: 'This connection has already been removed.' };
   }
+
+  const cancelStage = isParent
+    ? CONNECTION_STAGE.CANCELLED_BY_PARENT
+    : CONNECTION_STAGE.CANCELLED_BY_NANNY;
 
   const { error: updateErr } = await adminClient
     .from('connection_requests')
-    .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+    .update({
+      status: 'cancelled',
+      connection_stage: cancelStage,
+      updated_at: new Date().toISOString(),
+    })
     .eq('id', requestId);
 
   if (updateErr) {
     console.error('[Connection] Cancel error:', updateErr);
     return { success: false, error: 'Failed to cancel connection request.' };
   }
+
+  funnelLog('cancel', requestId, `→ ${cancelStage}`, { cancelledBy: isParent ? 'parent' : 'nanny' });
 
   // Log event
   await logConnectionEvent({
@@ -835,8 +885,9 @@ export async function getParentConnectionRequests(): Promise<{ data: ConnectionR
     return { data: [], error: 'Not authenticated as parent' };
   }
 
-  // Lazy expire stale requests
+  // Lazy expire stale requests + advance completed intros
   await expireStaleRequests(adminClient, { parent_id: parentId });
+  await checkPostIntroOutcomes(adminClient, { parent_id: parentId });
 
   const { data, error } = await adminClient
     .from('connection_requests')
@@ -901,8 +952,9 @@ export async function getNannyConnectionRequests(): Promise<{ data: ConnectionRe
     return { data: [], error: 'Not authenticated as nanny' };
   }
 
-  // Lazy expire stale requests
+  // Lazy expire stale requests + advance completed intros
   await expireStaleRequests(adminClient, { nanny_id: nannyInfo.nannyId });
+  await checkPostIntroOutcomes(adminClient, { nanny_id: nannyInfo.nannyId });
 
   const { data, error } = await adminClient
     .from('connection_requests')

@@ -23,6 +23,7 @@ import {
   Eye,
   Inbox,
   Link2,
+  Award,
 } from "lucide-react";
 
 type UserRole = "nanny" | "parent" | "admin" | "super_admin" | "guest";
@@ -39,6 +40,7 @@ const nannyNavItems = [
   { href: "/nanny/team", icon: Users, label: "Our Team" },
   { href: "/nanny/verification", icon: ShieldCheck, label: "Verification" },
   { href: "/nanny/inbox", icon: Inbox, label: "Inbox" },
+  { href: "/nanny/positions", icon: Award, label: "My Positions" },
   { href: "/nanny/babysitting", icon: Briefcase, label: "Babysitting Jobs" },
   { href: "/nanny/settings", icon: Settings, label: "Settings" },
 ];
@@ -49,7 +51,7 @@ const parentNavItems = [
   { href: "/parent/position", icon: ClipboardList, label: "My Childcare" },
   { href: "/parent/matches", icon: Filter, label: "My Matches" },
   { href: "/parent/request", icon: PlusCircle, label: "Nanny Request" },
-  { href: "/parent/connections", icon: Link2, label: "Connections" },
+  { href: "/parent/position", icon: Link2, label: "Connections" },
   { href: "/parent/inbox", icon: Inbox, label: "Inbox" },
   { href: "/parent/babysitting", icon: Baby, label: "Babysitting" },
   { href: "/parent/settings", icon: Settings, label: "Settings" },

@@ -1,7 +1,11 @@
 'use server';
 
 import { createClient } from '@/lib/supabase/server';
+import { createAdminClient } from '@/lib/supabase/admin';
 import { revalidatePath } from 'next/cache';
+import { POSITION_STAGE, POSITION_STATUS, CONNECTION_STAGE } from '@/lib/position/constants';
+import { funnelLog } from '@/lib/position/logger';
+import { createInboxMessage } from './connection-helpers';
 
 export interface Position {
   id: string;
@@ -59,6 +63,17 @@ export interface Position {
   status: string;
   created_at: string;
   updated_at: string;
+
+  // Funnel (new — nullable until fully migrated)
+  stage: number | null;
+  position_status: number | null;
+  activated_at: string | null;
+  onboarding_complete_at: string | null;
+  ended_at: string | null;
+  end_reason: string | null;
+  closed_at: string | null;
+  filled_at: string | null;
+  filled_by_nanny_id: string | null;
 }
 
 export interface PositionChild {
@@ -103,7 +118,7 @@ export async function getPosition(): Promise<{ data: PositionWithChildren | null
     .from('nanny_positions')
     .select('*')
     .eq('parent_id', parentId)
-    .eq('status', 'active')
+    .in('status', ['active', 'filled'])
     .single();
 
   if (positionError) {
@@ -202,6 +217,8 @@ export async function createPosition(
       parent_id: parentId,
       ...positionData,
       status: 'active',
+      stage: POSITION_STAGE.OPEN,
+      position_status: POSITION_STATUS.OPEN,
     })
     .select('id')
     .single();
@@ -213,6 +230,8 @@ export async function createPosition(
     }
     return { success: false, error: 'Failed to create position' };
   }
+
+  funnelLog('createPosition', position.id, '→ Open(1)', { parentId });
 
   // Create children records
   if (children && children.length > 0) {
@@ -294,52 +313,7 @@ export async function updatePosition(
 
 import type { TypeformFormData } from '@/app/parent/request/questions';
 
-const AGE_RANGE_TO_MONTHS: Record<string, number> = {
-  '0–3 months': 1,
-  '3–6 months': 4,
-  '6–12 months': 9,
-  '1–2 years': 18,
-  '2–3 years': 30,
-  '3–4 years': 42,
-  '4–5 years': 54,
-  '5–10 years': 90,
-  '10–13 years': 138,
-  '13–16 years': 174,
-  '16+': 192,
-};
-
-const HOURS_TO_INT: Record<string, number> = {
-  'Under 10': 8,
-  '10–20': 15,
-  '20–30': 25,
-  '30–40': 35,
-  '40+': 45,
-};
-
-const DAY_TO_ROSTER_FIELD: Record<string, keyof TypeformFormData> = {
-  Monday: 'monday_roster',
-  Tuesday: 'tuesday_roster',
-  Wednesday: 'wednesday_roster',
-  Thursday: 'thursday_roster',
-  Friday: 'friday_roster',
-  Saturday: 'saturday_roster',
-  Sunday: 'sunday_roster',
-};
-
-function buildScheduleJson(
-  data: Partial<TypeformFormData>
-): Record<string, string[]> {
-  const schedule: Record<string, string[]> = {};
-  for (const day of data.weekly_roster ?? []) {
-    const fieldKey = DAY_TO_ROSTER_FIELD[day];
-    if (!fieldKey) continue;
-    const times = (data[fieldKey] as string[] | undefined) ?? [];
-    if (times.length > 0) {
-      schedule[day.toLowerCase()] = times;
-    }
-  }
-  return schedule;
-}
+import { AGE_RANGE_TO_MONTHS, HOURS_TO_INT, buildScheduleJson } from './position-utils';
 
 export async function saveTypeformPosition(
   formData: Partial<TypeformFormData>
@@ -356,7 +330,7 @@ export async function saveTypeformPosition(
     .from('nanny_positions')
     .select('id')
     .eq('parent_id', parentId)
-    .eq('status', 'active')
+    .in('status', ['active', 'filled'])
     .maybeSingle();
 
   // Build position row
@@ -432,6 +406,8 @@ export async function saveTypeformPosition(
         parent_id: parentId,
         ...positionRow,
         status: 'active',
+        stage: POSITION_STAGE.OPEN,
+        position_status: POSITION_STATUS.OPEN,
       })
       .select('id')
       .single();
@@ -447,6 +423,7 @@ export async function saveTypeformPosition(
       return { success: false, error: 'Failed to create position' };
     }
     positionId = position.id;
+    funnelLog('saveTypeformPosition', positionId, '→ Open(1)', { parentId });
   }
 
   // Children: delete existing and recreate
@@ -506,11 +483,49 @@ export async function saveTypeformPosition(
 
   revalidatePath('/parent/position');
   revalidatePath('/parent/request');
+
+  // Notify nanny if active placement exists for this position
+  if (existing) {
+    const adminClient = createAdminClient();
+    const { data: activePlacement } = await adminClient
+      .from('nanny_placements')
+      .select('nanny_id')
+      .eq('position_id', positionId)
+      .eq('status', 'active')
+      .maybeSingle();
+
+    if (activePlacement) {
+      const { data: nanny } = await adminClient
+        .from('nannies')
+        .select('user_id')
+        .eq('id', activePlacement.nanny_id)
+        .single();
+
+      if (nanny) {
+        const { data: parentProfile } = await adminClient
+          .from('user_profiles')
+          .select('first_name, last_name')
+          .eq('user_id', (await supabase.auth.getUser()).data.user?.id ?? '')
+          .single();
+
+        const familyName = parentProfile ? `The ${parentProfile.last_name} family` : 'Your family';
+        await createInboxMessage({
+          userId: nanny.user_id,
+          type: 'position_updated',
+          title: `${familyName} has updated the position details`,
+          body: 'The family has made changes to the position. Review the updates on your dashboard.',
+          actionUrl: '/nanny/positions',
+        });
+      }
+    }
+  }
+
   return { success: true, error: null, positionId };
 }
 
 export async function closePosition(
-  positionId: string
+  positionId: string,
+  noCandidates?: boolean
 ): Promise<{ success: boolean; error: string | null }> {
   const supabase = createClient();
 
@@ -519,9 +534,18 @@ export async function closePosition(
     return { success: false, error: 'Not authenticated as parent' };
   }
 
+  const posStatus = noCandidates
+    ? POSITION_STATUS.CLOSED_NO_CANDIDATES
+    : POSITION_STATUS.CLOSED;
+
   const { error } = await supabase
     .from('nanny_positions')
-    .update({ status: 'cancelled' })
+    .update({
+      status: 'cancelled',
+      stage: POSITION_STAGE.CLOSED,
+      position_status: posStatus,
+      closed_at: new Date().toISOString(),
+    })
     .eq('id', positionId)
     .eq('parent_id', parentId);
 
@@ -530,6 +554,21 @@ export async function closePosition(
     return { success: false, error: 'Failed to close position' };
   }
 
+  // Cancel all active connections for this position
+  const adminClient = createAdminClient();
+  await adminClient
+    .from('connection_requests')
+    .update({
+      status: 'cancelled',
+      connection_stage: CONNECTION_STAGE.CANCELLED_BY_PARENT,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('position_id', positionId)
+    .in('status', ['pending', 'accepted', 'confirmed']);
+
+  funnelLog('closePosition', positionId, `→ Closed(${posStatus})`, { parentId, noCandidates });
+
   revalidatePath('/parent/position');
+  revalidatePath('/parent/connections');
   return { success: true, error: null };
 }

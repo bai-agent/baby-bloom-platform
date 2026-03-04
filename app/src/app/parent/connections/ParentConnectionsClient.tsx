@@ -10,6 +10,8 @@ import {
   cancelConnectionRequest,
   scheduleConnectionTime,
 } from "@/lib/actions/connection";
+import { confirmPlacement } from "@/lib/actions/position-funnel";
+import { CONNECTION_STAGE } from "@/lib/position/constants";
 import { formatSydneyDate, TIME_BRACKETS, BRACKET_KEYS, getBracketTimeOptions } from "@/lib/timezone";
 import {
   Clock,
@@ -21,6 +23,8 @@ import {
   UserCheck,
   ChevronRight,
   PhoneCall,
+  Award,
+  Star,
 } from "lucide-react";
 
 function formatTimeLeft(expiresAt: string | null): { text: string; urgent: boolean } {
@@ -43,12 +47,31 @@ export function ParentConnectionsClient({ requests }: ParentConnectionsClientPro
   const router = useRouter();
   const [selectedRequest, setSelectedRequest] = useState<ConnectionRequestWithDetails | null>(null);
 
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+
+  // Connections awaiting parent confirmation (Path A — nanny reported hired)
+  const awaitingConfirmation = requests.filter(
+    (r) => r.connection_stage === CONNECTION_STAGE.OFFERED && r.fill_initiated_by === 'nanny'
+  );
   const confirmed = requests.filter((r) => r.status === "confirmed");
   const accepted = requests.filter((r) => r.status === "accepted");
   const pending = requests.filter((r) => r.status === "pending");
   const past = requests.filter((r) =>
     ["declined", "cancelled", "expired"].includes(r.status)
   );
+
+  const handleConfirmPlacement = async (requestId: string) => {
+    setConfirmingId(requestId);
+    setConfirmError(null);
+    const result = await confirmPlacement(requestId);
+    setConfirmingId(null);
+    if (!result.success) {
+      setConfirmError(result.error || "Failed to confirm placement.");
+    } else {
+      router.refresh();
+    }
+  };
 
   return (
     <div className="space-y-8">
@@ -62,6 +85,72 @@ export function ParentConnectionsClient({ requests }: ParentConnectionsClientPro
             router.refresh();
           }}
         />
+      )}
+
+      {/* Confirm Placement — Path A: nanny reported hired */}
+      {awaitingConfirmation.length > 0 && (
+        <section className="space-y-4">
+          <h2 className="flex items-center gap-2 text-lg font-semibold text-green-700">
+            <Award className="h-5 w-5" />
+            Confirm Placement ({awaitingConfirmation.length})
+          </h2>
+          {confirmError && (
+            <p className="text-sm text-red-600 px-1">{confirmError}</p>
+          )}
+          <div className="grid gap-3">
+            {awaitingConfirmation.map((req) => (
+              <div
+                key={req.id}
+                className="rounded-lg border-2 border-green-300 bg-green-50 p-4 space-y-3"
+              >
+                <div className="flex items-center gap-3">
+                  {req.nanny?.profile_picture_url ? (
+                    <img
+                      src={req.nanny.profile_picture_url}
+                      alt=""
+                      className="h-12 w-12 rounded-full object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-green-200">
+                      <span className="text-sm font-semibold text-green-700">
+                        {req.nanny?.first_name?.[0]}
+                        {req.nanny?.last_name?.[0]}
+                      </span>
+                    </div>
+                  )}
+                  <div>
+                    <p className="font-semibold text-slate-900">
+                      {req.nanny?.first_name} {req.nanny?.last_name?.[0]}.
+                    </p>
+                    <p className="text-sm text-green-700">
+                      {req.nanny?.first_name} has indicated they&apos;ve been selected for your position
+                    </p>
+                  </div>
+                </div>
+                <div className="flex gap-3">
+                  <Button
+                    variant="outline"
+                    className="flex-1"
+                    onClick={() => setSelectedRequest(req)}
+                  >
+                    View Details
+                  </Button>
+                  <Button
+                    className="flex-1 bg-green-600 hover:bg-green-700"
+                    disabled={confirmingId === req.id}
+                    onClick={() => handleConfirmPlacement(req.id)}
+                  >
+                    {confirmingId === req.id ? (
+                      <><Loader2 className="mr-2 h-4 w-4 animate-spin" />Confirming...</>
+                    ) : (
+                      <><Star className="mr-2 h-4 w-4" />Confirm Placement</>
+                    )}
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
       )}
 
       {/* Confirmed Intros */}
@@ -304,7 +393,7 @@ function ConnectionDetailModal({
     const period = selectedHour >= 12 ? "PM" : "AM";
     const displayHour = selectedHour > 12 ? selectedHour - 12 : selectedHour === 0 ? 12 : selectedHour;
     const displayMin = selectedMinute.toString().padStart(2, "0");
-    return `${weekday} ${day} at ${displayHour}:${displayMin} ${period} (Sydney time)`;
+    return `${weekday} ${day} at ${displayHour}:${displayMin} ${period}`;
   };
 
   const handleSchedule = async () => {
@@ -378,7 +467,7 @@ function ConnectionDetailModal({
               <div className="space-y-2">
                 <p className="text-sm font-medium text-slate-700 flex items-center gap-1.5">
                   <Calendar className="h-3.5 w-3.5" />
-                  {request.nanny?.first_name}&apos;s availability (Sydney time)
+                  {request.nanny?.first_name}&apos;s availability
                 </p>
 
                 <div className="overflow-x-auto">

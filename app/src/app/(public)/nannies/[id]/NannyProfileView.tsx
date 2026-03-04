@@ -17,6 +17,7 @@ import {
   BadgeCheck,
   Pencil,
   Check,
+  AlertTriangle,
 } from "lucide-react";
 
 // ── Helpers ──
@@ -172,6 +173,8 @@ interface NannyProfileViewProps {
   isParent?: boolean;
   pendingRequestCount?: number;
   existingRequestStatus?: string | null;
+  hasActivePlacement?: boolean;
+  isActiveNanny?: boolean;
 }
 
 export function NannyProfileView({
@@ -180,9 +183,12 @@ export function NannyProfileView({
   isParent = false,
   pendingRequestCount = 0,
   existingRequestStatus = null,
+  hasActivePlacement = false,
+  isActiveNanny = false,
 }: NannyProfileViewProps) {
   const [activeTab, setActiveTab] = useState<TabId>("profile");
   const [showConnectModal, setShowConnectModal] = useState(false);
+  const [showPlacementBlock, setShowPlacementBlock] = useState(false);
 
   const age = calculateAge(nanny.date_of_birth);
   const bioSummary = parseBioSummary(nanny.ai_content?.bio_summary);
@@ -256,7 +262,7 @@ export function NannyProfileView({
         </div>
 
         {/* CTA */}
-        {!isOwner && (
+        {!isOwner && !isActiveNanny && (
           <div className="mt-5">
             {existingRequestStatus === 'confirmed' ? (
               <Link href="/parent/connections">
@@ -272,6 +278,13 @@ export function NannyProfileView({
                   Connection Pending
                 </Button>
               </Link>
+            ) : isParent && hasActivePlacement ? (
+              <Button
+                className="w-full bg-slate-200 text-slate-500 font-medium"
+                onClick={() => setShowPlacementBlock(true)}
+              >
+                Connect with {nanny.first_name}
+              </Button>
             ) : isParent ? (
               <Button
                 className="w-full bg-violet-600 hover:bg-violet-700 text-white font-medium"
@@ -286,6 +299,35 @@ export function NannyProfileView({
                 </Button>
               </Link>
             )}
+          </div>
+        )}
+
+        {/* Active Placement Block Popup */}
+        {showPlacementBlock && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+            <div className="w-full max-w-sm rounded-xl bg-white p-6 shadow-lg space-y-4">
+              <div className="flex items-center gap-2 text-amber-600">
+                <AlertTriangle className="h-5 w-5" />
+                <h3 className="font-semibold text-lg">Position already filled</h3>
+              </div>
+              <p className="text-sm text-slate-600">
+                You already have an active nanny on your position. To connect with {nanny.first_name}, you&apos;ll need to remove your current nanny first.
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  onClick={() => setShowPlacementBlock(false)}
+                >
+                  Got it
+                </Button>
+                <Link href="/parent/position" className="flex-1">
+                  <Button className="w-full bg-violet-600 hover:bg-violet-700 text-white">
+                    Go to My Position
+                  </Button>
+                </Link>
+              </div>
+            </div>
           </div>
         )}
 

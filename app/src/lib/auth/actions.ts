@@ -23,12 +23,10 @@ export async function signUp(formData: FormData): Promise<ActionResult> {
   const password = formData.get('password') as string;
   const firstName = formData.get('firstName') as string;
   const lastName = formData.get('lastName') as string;
-  const suburb = formData.get('suburb') as string;
-  const postcode = formData.get('postcode') as string;
   const role = formData.get('role') as UserRole;
 
   // Validate required fields
-  if (!email || !password || !firstName || !lastName || !suburb || !postcode || !role) {
+  if (!email || !password || !firstName || !lastName || !role) {
     return { error: 'All fields are required' };
   }
 
@@ -99,8 +97,6 @@ export async function signUp(formData: FormData): Promise<ActionResult> {
         first_name: firstName,
         last_name: lastName,
         email: email,
-        suburb: suburb,
-        postcode: postcode,
       });
 
     if (profileError) {

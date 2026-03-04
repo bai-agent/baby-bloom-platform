@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { cn } from "@/lib/utils";
 import { SuburbAutocomplete } from "./SuburbAutocomplete";
 import { saveTypeformPosition } from "@/lib/actions/parent";
 import {
@@ -44,15 +45,25 @@ type TabId = (typeof TABS)[number]["id"];
 interface PositionDetailViewProps {
   initialData: Partial<TypeformFormData>;
   onClosePosition?: () => void;
+  onSave?: (data: Partial<TypeformFormData>) => Promise<{ success: boolean; error: string | null }>;
+  hideClosePosition?: boolean;
+  /** When provided, controls editing externally (hides internal Edit button) */
+  editingExternal?: boolean;
+  onEditingChange?: (editing: boolean) => void;
 }
 
 export function PositionDetailView({
   initialData,
   onClosePosition,
+  onSave,
+  hideClosePosition,
+  editingExternal,
+  onEditingChange,
 }: PositionDetailViewProps) {
   const [data, setData] = useState<Partial<TypeformFormData>>(initialData);
   const [activeTab, setActiveTab] = useState<TabId>("children");
-  const [isEditing, setIsEditing] = useState(false);
+  const [isEditingInternal, setIsEditingInternal] = useState(false);
+  const isEditing = editingExternal !== undefined ? editingExternal : isEditingInternal;
   const [editingField, setEditingField] = useState<string | null>(null);
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -65,14 +76,18 @@ export function PositionDetailView({
   };
 
   const toggleEdit = () => {
-    setIsEditing((p) => !p);
+    if (onEditingChange) {
+      onEditingChange(!isEditing);
+    } else {
+      setIsEditingInternal((p) => !p);
+    }
     setEditingField(null);
   };
 
   const handleSave = async () => {
     setIsSaving(true);
     setSaveError(null);
-    const result = await saveTypeformPosition(data);
+    const result = onSave ? await onSave(data) : await saveTypeformPosition(data);
     setIsSaving(false);
     if (result.success) {
       setIsDirty(false);
@@ -237,38 +252,44 @@ export function PositionDetailView({
 
   return (
     <div className="pb-10">
-      {/* Tab bar + Edit button */}
-      <div className="flex items-center justify-between gap-2 pb-4 mb-2 border-b border-slate-100">
-        <div className="flex gap-1 overflow-x-auto -mx-1 px-1 scrollbar-hide">
-          {TABS.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => {
-                setActiveTab(tab.id);
-                setEditingField(null);
-              }}
-              className={`px-3 py-1.5 rounded-lg text-sm font-medium whitespace-nowrap transition-colors ${
-                activeTab === tab.id
-                  ? "bg-violet-100 text-violet-700"
-                  : "text-slate-400 hover:text-slate-600"
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
+      {/* Edit toggle — hidden when controlled externally */}
+      {editingExternal === undefined && (
+        <div className="flex justify-end mb-2">
+          <button
+            type="button"
+            onClick={toggleEdit}
+            className={cn(
+              "px-3 py-1.5 rounded-lg text-sm font-medium transition-colors",
+              isEditing
+                ? "bg-violet-600 text-white"
+                : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+            )}
+          >
+            {isEditing ? "Done" : "Edit"}
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={toggleEdit}
-          className={`shrink-0 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-            isEditing
-              ? "bg-violet-600 text-white"
-              : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-          }`}
-        >
-          {isEditing ? "Done" : "Edit"}
-        </button>
+      )}
+
+      {/* Tab bar */}
+      <div className="flex rounded-xl border border-slate-200 bg-white p-1 shadow-sm mb-4">
+        {TABS.map((tab) => (
+          <button
+            key={tab.id}
+            type="button"
+            onClick={() => {
+              setActiveTab(tab.id);
+              setEditingField(null);
+            }}
+            className={cn(
+              "flex flex-1 items-center justify-center rounded-lg px-2 py-2.5 text-sm font-medium transition-colors",
+              activeTab === tab.id
+                ? "bg-violet-600 text-white shadow-sm"
+                : "text-slate-500 hover:text-slate-700 hover:bg-slate-50"
+            )}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
       {/* ── Children tab ── */}
@@ -999,7 +1020,7 @@ export function PositionDetailView({
             Changes saved
           </p>
         )}
-        {onClosePosition && (
+        {onClosePosition && !hideClosePosition && (
           <button
             type="button"
             onClick={onClosePosition}

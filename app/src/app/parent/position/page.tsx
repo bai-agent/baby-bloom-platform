@@ -1,6 +1,8 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { AlertCircle } from "lucide-react";
 import { getPosition, PositionWithChildren } from "@/lib/actions/parent";
+import { getParentPlacement, getConfirmedConnections, getParentUpcomingIntros } from "@/lib/actions/position-funnel";
+import { POSITION_STAGE } from "@/lib/position/constants";
 import { PositionPageClient } from "./PositionPageClient";
 
 const isDevMode = process.env.NEXT_PUBLIC_DEV_MODE === 'true';
@@ -43,6 +45,20 @@ export default async function ParentPositionPage() {
     error = result.error ?? null;
   }
 
+  // Fetch placement + confirmed connections for Path B + upcoming intros
+  const [placementResult, connectionsResult, introsResult] = await Promise.all([
+    getParentPlacement(),
+    position?.id ? getConfirmedConnections(position.id) : Promise.resolve({ data: [], error: null }),
+    getParentUpcomingIntros(),
+  ]);
+
+  const placement = placementResult.data;
+  const confirmedNannies = connectionsResult.data;
+  const upcomingIntros = introsResult.data;
+  const showFillButton = position && !placement &&
+    (position as PositionWithChildren & { stage?: number }).stage === POSITION_STAGE.CONNECTING &&
+    confirmedNannies.length > 0;
+
   if (error) {
     return (
       <div className="space-y-6">
@@ -69,7 +85,13 @@ export default async function ParentPositionPage() {
         </p>
       </div>
 
-      <PositionPageClient position={position} />
+      <PositionPageClient
+        position={position}
+        placement={placement}
+        confirmedNannies={confirmedNannies}
+        showFillButton={!!showFillButton}
+        upcomingIntros={upcomingIntros}
+      />
 
       {/* How to create — only when no position */}
       {!position && (
