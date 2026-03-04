@@ -9,8 +9,10 @@ import {
   PARENT_GUIDANCE_MESSAGES,
   type UserGuidance,
 } from '@/lib/verification';
-import { verifyPassport } from './verify-passport';
-import { verifyDriversLicense } from './verify-drivers-license';
+import { verifyPassport, type PassportVerificationResult } from './verify-passport';
+import { verifyDriversLicense, type DriversLicenseVerificationResult } from './verify-drivers-license';
+
+type VerificationResult = PassportVerificationResult | DriversLicenseVerificationResult;
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -32,6 +34,7 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function setParentIdentityReview(
   supabase: any,
   verificationId: string,
@@ -141,14 +144,14 @@ export async function runParentIdentityPhase(verificationId: string): Promise<vo
   // ---------------------------------------------------------------------------
   // 5. 2-ATTEMPT RETRY LOOP
   // ---------------------------------------------------------------------------
-  let result: any = null;
+  let result: VerificationResult | null = null;
   let lastError: Error | null = null;
 
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       console.log(`[ParentIdentity] Attempt ${attempt}/2 for document type:`, claimed.document_type);
 
-      let verifyPromise: Promise<any>;
+      let verifyPromise: Promise<VerificationResult>;
 
       if (claimed.document_type === 'passport') {
         verifyPromise = verifyPassport(
@@ -220,7 +223,8 @@ export async function runParentIdentityPhase(verificationId: string): Promise<vo
   // ---------------------------------------------------------------------------
   // 6. STORE EXTRACTION RESULTS
   // ---------------------------------------------------------------------------
-  const extractionUpdate: any = {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const extractionUpdate: Record<string, any> = {
     identity_ai_reasoning: result.reasoning || 'No reasoning provided',
     identity_ai_issues: JSON.stringify(result.issues || []),
     selfie_confidence: result.selfie_confidence || null,
@@ -228,20 +232,22 @@ export async function runParentIdentityPhase(verificationId: string): Promise<vo
   };
 
   if (claimed.document_type === 'passport') {
-    extractionUpdate.extracted_surname = result.extracted?.surname || null;
-    extractionUpdate.extracted_given_names = result.extracted?.given_names || null;
-    extractionUpdate.extracted_dob = result.extracted?.date_of_birth || null;
-    extractionUpdate.extracted_nationality = result.extracted?.nationality || null;
-    extractionUpdate.extracted_passport_number = result.extracted?.passport_number || null;
-    extractionUpdate.extracted_passport_expiry = result.extracted?.expiry_date || null;
+    const passportResult = result as PassportVerificationResult;
+    extractionUpdate.extracted_surname = passportResult.extracted?.surname || null;
+    extractionUpdate.extracted_given_names = passportResult.extracted?.given_names || null;
+    extractionUpdate.extracted_dob = passportResult.extracted?.dob || null;
+    extractionUpdate.extracted_nationality = passportResult.extracted?.nationality || null;
+    extractionUpdate.extracted_passport_number = passportResult.extracted?.passport_number || null;
+    extractionUpdate.extracted_passport_expiry = passportResult.extracted?.expiry || null;
   } else if (claimed.document_type === 'drivers_license') {
-    extractionUpdate.extracted_surname = result.extracted?.surname || null;
-    extractionUpdate.extracted_given_names = result.extracted?.given_names || null;
-    extractionUpdate.extracted_dob = result.extracted?.date_of_birth || null;
-    extractionUpdate.extracted_license_number = result.extracted?.license_number || null;
-    extractionUpdate.extracted_license_expiry = result.extracted?.expiry_date || null;
-    extractionUpdate.extracted_license_state = result.extracted?.state || null;
-    extractionUpdate.extracted_license_class = result.extracted?.license_class || null;
+    const licenseResult = result as DriversLicenseVerificationResult;
+    extractionUpdate.extracted_surname = licenseResult.extracted?.surname || null;
+    extractionUpdate.extracted_given_names = licenseResult.extracted?.given_names || null;
+    extractionUpdate.extracted_dob = licenseResult.extracted?.dob || null;
+    extractionUpdate.extracted_license_number = licenseResult.extracted?.license_number || null;
+    extractionUpdate.extracted_license_expiry = licenseResult.extracted?.license_expiry || null;
+    extractionUpdate.extracted_license_state = licenseResult.extracted?.state_province || null;
+    extractionUpdate.extracted_license_class = licenseResult.extracted?.license_class || null;
   }
 
   await supabase.from('parent_verifications').update(extractionUpdate).eq('id', verificationId);

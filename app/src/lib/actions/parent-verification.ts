@@ -8,9 +8,6 @@ import {
   CONTACT_STATUS,
   CROSS_CHECK_STATUS,
   PARENT_VERIFICATION_STATUS,
-  type ParentIdentityStatus,
-  type ContactStatus,
-  type CrossCheckStatus,
 } from '@/lib/verification';
 import { sendEmail } from '@/lib/email/resend';
 import { getUserEmailInfo } from '@/lib/email/helpers';
