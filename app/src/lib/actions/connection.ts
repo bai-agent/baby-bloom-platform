@@ -174,6 +174,18 @@ export async function createConnectionRequest(
     return { success: false, error: 'Not authenticated as parent' };
   }
 
+  // Check parent verification
+  const adminClient = createAdminClient();
+  const { data: parentRecord } = await adminClient
+    .from('parents')
+    .select('verification_level')
+    .eq('id', parentId)
+    .single();
+
+  if (!parentRecord || (parentRecord.verification_level ?? 0) < 1) {
+    return { success: false, error: 'VERIFICATION_REQUIRED' };
+  }
+
   // Check for active/filled position
   const { data: position } = await supabase
     .from('nanny_positions')
@@ -234,7 +246,6 @@ export async function createConnectionRequest(
   funnelLog('createConnection', request.id, 'created', { nannyId, parentId, positionId: position?.id });
 
   // Move position from Open → Connecting (if this is the first connection)
-  const adminClient = createAdminClient();
   if (position?.id && position.stage === POSITION_STAGE.OPEN) {
     await adminClient
       .from('nanny_positions')

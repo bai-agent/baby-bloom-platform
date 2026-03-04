@@ -13,11 +13,11 @@ import {
   DialogDescription,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { GuidanceCard } from "./GuidanceCard";
+import { GuidanceCard } from "@/app/nanny/verification/sections/GuidanceCard";
 import { uploadFileWithProgress } from "@/lib/supabase/storage";
-import { submitIdentitySection, submitIdentityForManualReview } from "@/lib/actions/verification";
+import { submitParentIdentitySection, submitParentIdentityForManualReview } from "@/lib/actions/parent-verification";
 import { createClient } from "@/lib/supabase/client";
-import type { VerificationData } from "@/lib/actions/verification";
+import type { ParentVerificationData } from "@/types/parent";
 
 const PASSPORT_COUNTRIES = [
   "Australia", "Afghanistan", "Albania", "Algeria", "Andorra", "Angola",
@@ -114,8 +114,7 @@ function FileUploadZone({
   const inputRef = useRef<HTMLInputElement>(null);
 
   function handleFile(file: File) {
-    // Skip format check for non-image accepts (e.g. PDF)
-    if (accept !== "application/pdf,.pdf" && !isAllowedImageFile(file)) {
+    if (!isAllowedImageFile(file)) {
       onFormatError?.("Unsupported format. Please upload a PNG, JPEG, or WebP image.");
       return;
     }
@@ -184,20 +183,23 @@ function FileUploadZone({
   );
 }
 
-// ── Identity Section ──
+// ── Parent Identity Section ──
 
-interface IdentitySectionProps {
-  verification: VerificationData | null;
+interface ParentIdentitySectionProps {
+  verification: ParentVerificationData | null;
+  documentType: string; // 'passport' or 'drivers_license'
   onSaved: (verificationId: string, data: { surname: string; givenNames: string; dob: string }) => void;
   onManualReview: () => void;
 }
 
-export function IdentitySection({ verification, onSaved, onManualReview }: IdentitySectionProps) {
+export function ParentIdentitySection({ verification, documentType, onSaved, onManualReview }: ParentIdentitySectionProps) {
   const status = verification?.identity_status ?? "not_started";
   const isProcessing = status === "processing" || status === "pending";
   const isCompleted = status === "verified";
   const isReview = status === "review";
-  const needsAction = status === "failed" || status === "rejected";
+  const isFailed = verification?.verification_status === 12;
+  const isRejected = verification?.verification_status === 13;
+  const needsAction = isFailed || isRejected;
 
   const [editing, setEditing] = useState(status === "not_started");
   const [isSaving, setIsSaving] = useState(false);
@@ -209,19 +211,19 @@ export function IdentitySection({ verification, onSaved, onManualReview }: Ident
   const [surname, setSurname] = useState(verification?.surname ?? "");
   const [givenNames, setGivenNames] = useState(verification?.given_names ?? "");
   const [dob, setDob] = useState(verification?.date_of_birth ?? "");
-  const [passportCountry, setPassportCountry] = useState(verification?.passport_country ?? "");
+  const [issuingCountry, setIssuingCountry] = useState(verification?.issuing_country ?? "");
   const [confirmed, setConfirmed] = useState(false);
 
   // Upload state — upload eagerly on file selection
-  const [passportUploadState, setPassportUploadState] = useState<UploadState>(
-    verification?.passport_upload_url ? "done" : "idle"
+  const [documentUploadState, setDocumentUploadState] = useState<UploadState>(
+    verification?.document_upload_url ? "done" : "idle"
   );
-  const [passportProgress, setPassportProgress] = useState(0);
-  const [passportFileName, setPassportFileName] = useState<string | null>(
-    verification?.passport_upload_url ? "Previously uploaded" : null
+  const [documentProgress, setDocumentProgress] = useState(0);
+  const [documentFileName, setDocumentFileName] = useState<string | null>(
+    verification?.document_upload_url ? "Previously uploaded" : null
   );
-  const [passportUrl, setPassportUrl] = useState<string | null>(verification?.passport_upload_url ?? null);
-  const [passportError, setPassportError] = useState<string | null>(null);
+  const [documentUrl, setDocumentUrl] = useState<string | null>(verification?.document_upload_url ?? null);
+  const [documentError, setDocumentError] = useState<string | null>(null);
 
   const [selfieUploadState, setSelfieUploadState] = useState<UploadState>(
     verification?.identification_photo_url ? "done" : "idle"
@@ -233,31 +235,33 @@ export function IdentitySection({ verification, onSaved, onManualReview }: Ident
   const [selfieUrl, setSelfieUrl] = useState<string | null>(verification?.identification_photo_url ?? null);
   const [selfieError, setSelfieError] = useState<string | null>(null);
 
-  const handlePassportSelect = useCallback(async (file: File) => {
-    setPassportFileName(file.name);
-    setPassportUploadState("uploading");
-    setPassportProgress(0);
-    setPassportError(null);
+  const docLabel = documentType === "passport" ? "Passport" : "Driver's License";
+
+  const handleDocumentSelect = useCallback(async (file: File) => {
+    setDocumentFileName(file.name);
+    setDocumentUploadState("uploading");
+    setDocumentProgress(0);
+    setDocumentError(null);
 
     const supabase = createClient();
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
-      setPassportUploadState("error");
-      setPassportError("Not authenticated");
+      setDocumentUploadState("error");
+      setDocumentError("Not authenticated");
       return;
     }
 
     const result = await uploadFileWithProgress(
-      "verification-documents", user.id, file,
-      (p) => setPassportProgress(p)
+      "parent-verifications", user.id, file,
+      (p) => setDocumentProgress(p)
     );
 
     if (result.error || !result.url) {
-      setPassportUploadState("error");
-      setPassportError(result.error ?? "Upload failed");
+      setDocumentUploadState("error");
+      setDocumentError(result.error ?? "Upload failed");
     } else {
-      setPassportUrl(result.url);
-      setPassportUploadState("done");
+      setDocumentUrl(result.url);
+      setDocumentUploadState("done");
     }
   }, []);
 
@@ -276,7 +280,7 @@ export function IdentitySection({ verification, onSaved, onManualReview }: Ident
     }
 
     const result = await uploadFileWithProgress(
-      "verification-documents", user.id, file,
+      "parent-verifications", user.id, file,
       (p) => setSelfieProgress(p)
     );
 
@@ -293,15 +297,15 @@ export function IdentitySection({ verification, onSaved, onManualReview }: Ident
     surname.trim() &&
     givenNames.trim() &&
     dob &&
-    passportCountry &&
-    passportUrl &&
+    issuingCountry &&
+    documentUrl &&
     selfieUrl &&
-    passportUploadState === "done" &&
+    documentUploadState === "done" &&
     selfieUploadState === "done" &&
     confirmed;
 
   async function handleSaveAndVerify() {
-    if (!passportUrl || !selfieUrl) return;
+    if (!documentUrl || !selfieUrl) return;
     setIsSaving(true);
     setError(null);
 
@@ -310,12 +314,13 @@ export function IdentitySection({ verification, onSaved, onManualReview }: Ident
       let saveResult;
       try {
         saveResult = await Promise.race([
-          submitIdentitySection({
+          submitParentIdentitySection({
+            document_type: documentType,
+            issuing_country: issuingCountry,
             surname: surname.trim(),
             given_names: givenNames.trim(),
             date_of_birth: dob,
-            passport_country: passportCountry,
-            passport_upload_url: passportUrl,
+            document_upload_url: documentUrl,
             identification_photo_url: selfieUrl,
           }),
           new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Save timed out — please try again")), 15000)),
@@ -336,7 +341,7 @@ export function IdentitySection({ verification, onSaved, onManualReview }: Ident
       fetch("/api/run-verification", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ verificationId: saveResult.verificationId, phase: "identity" }),
+        body: JSON.stringify({ verificationId: saveResult.verificationId, phase: "parent-identity" }),
       }).catch(() => {});
 
       setIsSaving(false);
@@ -353,7 +358,7 @@ export function IdentitySection({ verification, onSaved, onManualReview }: Ident
     setIsSubmittingReview(true);
     setError(null);
     try {
-      const result = await submitIdentityForManualReview();
+      const result = await submitParentIdentityForManualReview();
       if (!result.success) {
         setError(result.error ?? "Failed to submit for review");
         setIsSubmittingReview(false);
@@ -387,11 +392,15 @@ export function IdentitySection({ verification, onSaved, onManualReview }: Ident
             {(verification?.date_of_birth || dob) && (
               <p>Date of Birth: {new Date(verification?.date_of_birth || dob).toLocaleDateString("en-AU", { day: "2-digit", month: "2-digit", year: "numeric" })}</p>
             )}
-            {verification?.extracted_passport_number && (
-              <p>Passport: {verification.extracted_passport_number}</p>
-            )}
-            {verification?.extracted_nationality && (
-              <p>Nationality: {verification.extracted_nationality}</p>
+            <p>Document Type: {documentType === "passport" ? "Passport" : "Driver's License"}</p>
+            {documentType === "passport" ? (
+              verification?.extracted_passport_number && (
+                <p>Passport: {verification.extracted_passport_number}</p>
+              )
+            ) : (
+              verification?.extracted_license_number && (
+                <p>License: {verification.extracted_license_number}</p>
+              )
             )}
           </div>
         )}
@@ -399,7 +408,7 @@ export function IdentitySection({ verification, onSaved, onManualReview }: Ident
         {isReview && (
           <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-700 space-y-1">
             <p className="font-medium text-amber-800">Pending manual review</p>
-            <p>We will manually review your passport documents. This may take up to 3 days.</p>
+            <p>We will manually review your documents. This may take up to 3 days.</p>
           </div>
         )}
 
@@ -414,10 +423,10 @@ export function IdentitySection({ verification, onSaved, onManualReview }: Ident
           <GuidanceCard
             guidance={verification.identity_user_guidance}
             primaryAction={{ label: "Edit & Resubmit", onClick: () => { setEditing(true); setConfirmed(false); } }}
-            secondaryAction={{
+            secondaryAction={isFailed ? {
               label: isSubmittingReview ? "Submitting..." : "Submit for Manual Review",
               onClick: () => setShowReviewConfirm(true),
-            }}
+            } : undefined}
           />
         )}
 
@@ -431,20 +440,22 @@ export function IdentitySection({ verification, onSaved, onManualReview }: Ident
             >
               Edit & Resubmit
             </Button>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setShowReviewConfirm(true)}
-              disabled={isSubmittingReview}
-              size="sm"
-            >
-              {isSubmittingReview ? (
-                <>
-                  <Loader2 className="mr-2 h-3 w-3 animate-spin" />
-                  Submitting...
-                </>
-              ) : "Submit for Manual Review"}
-            </Button>
+            {isFailed && (
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setShowReviewConfirm(true)}
+                disabled={isSubmittingReview}
+                size="sm"
+              >
+                {isSubmittingReview ? (
+                  <>
+                    <Loader2 className="mr-2 h-3 w-3 animate-spin" />
+                    Submitting...
+                  </>
+                ) : "Submit for Manual Review"}
+              </Button>
+            )}
           </div>
         )}
 
@@ -481,7 +492,7 @@ export function IdentitySection({ verification, onSaved, onManualReview }: Ident
 
   // Form (editing mode)
   const today = new Date().toISOString().split("T")[0];
-  const isUploading = passportUploadState === "uploading" || selfieUploadState === "uploading";
+  const isUploading = documentUploadState === "uploading" || selfieUploadState === "uploading";
 
   return (
     <div className="space-y-6">
@@ -493,7 +504,7 @@ export function IdentitySection({ verification, onSaved, onManualReview }: Ident
         <Label htmlFor="surname" className="text-sm font-medium text-slate-700">Surname</Label>
         <Input
           id="surname"
-          placeholder="As shown on passport"
+          placeholder={`As shown on ${docLabel.toLowerCase()}`}
           value={surname}
           onChange={(e) => setSurname(e.target.value)}
           disabled={isSaving}
@@ -504,7 +515,7 @@ export function IdentitySection({ verification, onSaved, onManualReview }: Ident
         <Label htmlFor="given_names" className="text-sm font-medium text-slate-700">Given Name(s)</Label>
         <Input
           id="given_names"
-          placeholder="As shown on passport"
+          placeholder={`As shown on ${docLabel.toLowerCase()}`}
           value={givenNames}
           onChange={(e) => setGivenNames(e.target.value)}
           disabled={isSaving}
@@ -524,11 +535,11 @@ export function IdentitySection({ verification, onSaved, onManualReview }: Ident
       </div>
 
       <div className="space-y-2">
-        <Label htmlFor="passport_country" className="text-sm font-medium text-slate-700">Passport Country of Issue</Label>
+        <Label htmlFor="issuing_country" className="text-sm font-medium text-slate-700">Country of Issue</Label>
         <select
-          id="passport_country"
-          value={passportCountry}
-          onChange={(e) => setPassportCountry(e.target.value)}
+          id="issuing_country"
+          value={issuingCountry}
+          onChange={(e) => setIssuingCountry(e.target.value)}
           disabled={isSaving}
           className="w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm text-slate-800 focus:border-violet-500 focus:ring-1 focus:ring-violet-500 outline-none"
         >
@@ -540,15 +551,15 @@ export function IdentitySection({ verification, onSaved, onManualReview }: Ident
       </div>
 
       <FileUploadZone
-        label="Upload Passport"
-        fieldName="passport_file"
+        label={`Upload ${docLabel}`}
+        fieldName="document_file"
         accept=".png,.jpg,.jpeg,.gif,.webp"
-        uploadState={passportUploadState}
-        uploadProgress={passportProgress}
-        fileName={passportFileName}
-        uploadError={passportError}
-        onFileSelect={handlePassportSelect}
-        onFormatError={(msg) => setPassportError(msg)}
+        uploadState={documentUploadState}
+        uploadProgress={documentProgress}
+        fileName={documentFileName}
+        uploadError={documentError}
+        onFileSelect={handleDocumentSelect}
+        onFormatError={(msg) => setDocumentError(msg)}
         disabled={isSaving}
       />
 
@@ -579,15 +590,15 @@ export function IdentitySection({ verification, onSaved, onManualReview }: Ident
 
       <div className="flex items-start gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4">
         <input
-          id="passport_confirmed"
+          id="document_confirmed"
           type="checkbox"
           checked={confirmed}
           onChange={(e) => setConfirmed(e.target.checked)}
           disabled={isSaving}
           className="mt-0.5 h-4 w-4 accent-violet-600 cursor-pointer flex-shrink-0"
         />
-        <Label htmlFor="passport_confirmed" className="text-sm text-slate-700 cursor-pointer leading-relaxed">
-          I confirm that the passport I have provided is genuine, valid, and issued to me.
+        <Label htmlFor="document_confirmed" className="text-sm text-slate-700 cursor-pointer leading-relaxed">
+          I confirm that the document I have provided is genuine, valid, and issued to me.
         </Label>
       </div>
 

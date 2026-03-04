@@ -5,8 +5,8 @@ import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { submitContactSection } from "@/lib/actions/verification";
-import type { VerificationData } from "@/lib/actions/verification";
+import { submitParentContactSection } from "@/lib/actions/parent-verification";
+import type { ParentVerificationData } from "@/types/parent";
 
 // Strip whitespace and normalize to 04XXXXXXXX format
 function normalisePhone(val: string): string {
@@ -27,13 +27,13 @@ interface SuburbEntry {
   postcode: string;
 }
 
-interface ContactSectionProps {
-  verification: VerificationData | null;
+interface ParentContactSectionProps {
+  verification: ParentVerificationData | null;
   locked: boolean;
   onSaved: () => void;
 }
 
-export function ContactSection({ verification, locked, onSaved }: ContactSectionProps) {
+export function ParentContactSection({ verification, locked, onSaved }: ParentContactSectionProps) {
   const status = verification?.contact_status ?? "not_started";
   const isCompleted = status === "saved";
 
@@ -123,7 +123,7 @@ export function ContactSection({ verification, locked, onSaved }: ContactSection
   if (locked) {
     return (
       <div className="text-sm text-slate-500 py-4">
-        Complete the WWCC section first to unlock Contact Information.
+        Complete the ID section first to unlock Contact Information.
       </div>
     );
   }
@@ -137,7 +137,7 @@ export function ContactSection({ verification, locked, onSaved }: ContactSection
 
     try {
       const result = await Promise.race([
-        submitContactSection({
+        submitParentContactSection({
           phone_number: normalisePhone(phone),
           address_line: address.trim(),
           city: selectedSuburb!.suburb,
@@ -197,14 +197,14 @@ export function ContactSection({ verification, locked, onSaved }: ContactSection
       )}
 
       <div className="space-y-2">
-        <Label htmlFor="phone_number" className="text-sm font-medium text-slate-700">Phone Number</Label>
+        <Label htmlFor="parent_phone_number" className="text-sm font-medium text-slate-700">Phone Number</Label>
         <div className="flex gap-2">
           <div className="flex items-center gap-1.5 rounded-lg border border-slate-300 bg-slate-50 px-3 py-2.5 text-sm text-slate-700 flex-shrink-0">
             <span>+61</span>
           </div>
           <div className="flex-1 space-y-1">
             <Input
-              id="phone_number"
+              id="parent_phone_number"
               type="tel"
               placeholder="04XX XXX XXX"
               value={phone}
@@ -219,9 +219,9 @@ export function ContactSection({ verification, locked, onSaved }: ContactSection
 
       <div className="space-y-4">
         <div className="space-y-2">
-          <Label htmlFor="address_line" className="text-sm font-medium text-slate-700">Street Address</Label>
+          <Label htmlFor="parent_address_line" className="text-sm font-medium text-slate-700">Street Address</Label>
           <Input
-            id="address_line"
+            id="parent_address_line"
             placeholder="eg: 42 Bondi Road"
             value={address}
             onChange={(e) => setAddress(e.target.value)}
@@ -230,10 +230,10 @@ export function ContactSection({ verification, locked, onSaved }: ContactSection
         </div>
 
         <div className="space-y-2 relative" ref={dropdownRef}>
-          <Label htmlFor="suburb_postcode" className="text-sm font-medium text-slate-700">Suburb & Postcode</Label>
+          <Label htmlFor="parent_suburb_postcode" className="text-sm font-medium text-slate-700">Suburb & Postcode</Label>
           <Input
             ref={inputRef}
-            id="suburb_postcode"
+            id="parent_suburb_postcode"
             placeholder="Start typing suburb or postcode..."
             value={suburbQuery}
             onChange={(e) => handleSuburbChange(e.target.value)}
@@ -261,7 +261,6 @@ export function ContactSection({ verification, locked, onSaved }: ContactSection
             <p className="text-xs text-green-600 font-medium">{selectedSuburb.suburb}, NSW {selectedSuburb.postcode}</p>
           )}
         </div>
-
       </div>
 
       <Button
@@ -273,10 +272,10 @@ export function ContactSection({ verification, locked, onSaved }: ContactSection
         {isSaving || isVerifying ? (
           <>
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            Verifying...
+            Saving...
           </>
         ) : (
-          "Verify"
+          "Save"
         )}
       </Button>
     </div>

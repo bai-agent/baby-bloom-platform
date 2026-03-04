@@ -286,6 +286,10 @@ export function ParentBabysittingClient({ requests, suburbs }: ParentBabysitting
     setSubmitting(false);
 
     if (!result.success) {
+      if (result.error === 'VERIFICATION_REQUIRED') {
+        router.push('/parent/verification');
+        return;
+      }
       setFormError(result.error || "Failed to create request");
       return;
     }

@@ -7,18 +7,18 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
-import { IdentitySection } from "./sections/IdentitySection";
-import { WWCCSection } from "./sections/WWCCSection";
-import { ContactSection } from "./sections/ContactSection";
-import { SectionStatusBadge } from "./sections/SectionStatusBadge";
+import { DocumentTypeSelector } from "./sections/DocumentTypeSelector";
+import { ParentIdentitySection } from "./sections/ParentIdentitySection";
+import { ParentContactSection } from "./sections/ParentContactSection";
+import { SectionStatusBadge } from "@/app/nanny/verification/sections/SectionStatusBadge";
 import { Shield, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
-import type { VerificationData } from "@/lib/actions/verification";
+import type { ParentVerificationData } from "@/types/parent";
 import type { UserGuidance } from "@/lib/verification";
 
-interface VerificationPageClientProps {
-  initialData: VerificationData | null;
+interface ParentVerificationPageClientProps {
+  initialData: ParentVerificationData | null;
 }
 
 type PollResponse = {
@@ -29,15 +29,19 @@ type PollResponse = {
   surname: string | null;
   given_names: string | null;
   date_of_birth: string | null;
-  extracted_passport_number: string | null;
+  document_type: string | null;
+  issuing_country: string | null;
+  selfie_confidence: number | null;
+  extracted_surname: string | null;
+  extracted_given_names: string | null;
+  extracted_dob: string | null;
   extracted_nationality: string | null;
-  wwcc_status: string;
-  wwcc_number: string | null;
-  wwcc_expiry_date: string | null;
-  wwcc_doc_verified: boolean;
-  wwcc_verified: boolean;
-  wwcc_rejection_reason: string | null;
-  wwcc_user_guidance: UserGuidance | null;
+  extracted_passport_number: string | null;
+  extracted_passport_expiry: string | null;
+  extracted_license_number: string | null;
+  extracted_license_expiry: string | null;
+  extracted_license_state: string | null;
+  extracted_license_class: string | null;
   contact_status: string;
   cross_check_status: string;
   cross_check_reasoning: string | null;
@@ -79,44 +83,40 @@ function StepIndicator({ state, isFirst, isLast, topLineColor }: {
   );
 }
 
-export function VerificationPageClient({ initialData }: VerificationPageClientProps) {
-  const [verification, setVerification] = useState<VerificationData | null>(initialData);
+export function ParentVerificationPageClient({ initialData }: ParentVerificationPageClientProps) {
+  const [verification, setVerification] = useState<ParentVerificationData | null>(initialData);
+  const [documentType, setDocumentType] = useState<string | null>(initialData?.document_type ?? null);
 
-  // Determine which sections are unlocked
+  // Determine section statuses
   const identityStatus = verification?.identity_status ?? "not_started";
-  const wwccStatus = verification?.wwcc_status ?? "not_started";
   const contactStatus = verification?.contact_status ?? "not_started";
   const crossCheckStatus = verification?.cross_check_status ?? "not_started";
 
   const identityInReview = identityStatus === "review";
-  const wwccLocked = identityStatus === "not_started" || identityInReview;
-  const contactLocked = wwccStatus === "not_started";
+  const contactLocked = identityStatus === "not_started";
 
   // Determine which sections to open by default
   const getDefaultOpen = useCallback((): string[] => {
     if (identityStatus === "not_started") return ["identity"];
     if (identityInReview) return ["identity"];
-    if (wwccStatus === "not_started" && !wwccLocked) return ["wwcc"];
     if (contactStatus === "not_started" && !contactLocked) return ["contact"];
-    if (identityStatus === "processing") return ["wwcc"];
+    if (identityStatus === "processing") return ["identity"];
     if (["failed", "rejected"].includes(identityStatus)) return ["identity"];
-    if (["failed", "review", "rejected", "ocg_not_found", "closed", "application_pending", "barred", "expired"].includes(wwccStatus)) return ["wwcc"];
     return ["identity"];
-  }, [identityStatus, wwccStatus, contactStatus, wwccLocked, contactLocked, identityInReview]);
+  }, [identityStatus, contactStatus, contactLocked, identityInReview]);
 
   const [openSections, setOpenSections] = useState<string[]>(getDefaultOpen());
 
-  // Poll for status updates when sections are processing or pending
+  // Poll for status updates when identity is processing or pending
   const isProcessing =
-    identityStatus === "processing" || identityStatus === "pending" ||
-    wwccStatus === "processing" || wwccStatus === "pending";
+    identityStatus === "processing" || identityStatus === "pending";
 
   useEffect(() => {
     if (!isProcessing) return;
 
     const interval = setInterval(async () => {
       try {
-        const res = await fetch("/api/verification-status");
+        const res = await fetch("/api/parent-verification-status");
         if (!res.ok) return;
         const data: PollResponse = await res.json();
 
@@ -131,15 +131,18 @@ export function VerificationPageClient({ initialData }: VerificationPageClientPr
             surname: data.surname ?? prev.surname,
             given_names: data.given_names ?? prev.given_names,
             date_of_birth: data.date_of_birth ?? prev.date_of_birth,
-            extracted_passport_number: data.extracted_passport_number ?? prev.extracted_passport_number,
+            document_type: data.document_type ?? prev.document_type,
+            selfie_confidence: data.selfie_confidence ?? prev.selfie_confidence,
+            extracted_surname: data.extracted_surname ?? prev.extracted_surname,
+            extracted_given_names: data.extracted_given_names ?? prev.extracted_given_names,
+            extracted_dob: data.extracted_dob ?? prev.extracted_dob,
             extracted_nationality: data.extracted_nationality ?? prev.extracted_nationality,
-            wwcc_status: data.wwcc_status,
-            wwcc_number: data.wwcc_number ?? prev.wwcc_number,
-            wwcc_expiry_date: data.wwcc_expiry_date ?? prev.wwcc_expiry_date,
-            wwcc_doc_verified: data.wwcc_doc_verified,
-            wwcc_verified: data.wwcc_verified,
-            wwcc_rejection_reason: data.wwcc_rejection_reason,
-            wwcc_user_guidance: data.wwcc_user_guidance,
+            extracted_passport_number: data.extracted_passport_number ?? prev.extracted_passport_number,
+            extracted_passport_expiry: data.extracted_passport_expiry ?? prev.extracted_passport_expiry,
+            extracted_license_number: data.extracted_license_number ?? prev.extracted_license_number,
+            extracted_license_expiry: data.extracted_license_expiry ?? prev.extracted_license_expiry,
+            extracted_license_state: data.extracted_license_state ?? prev.extracted_license_state,
+            extracted_license_class: data.extracted_license_class ?? prev.extracted_license_class,
             contact_status: data.contact_status,
             cross_check_status: data.cross_check_status,
             cross_check_reasoning: data.cross_check_reasoning,
@@ -154,6 +157,10 @@ export function VerificationPageClient({ initialData }: VerificationPageClientPr
     return () => clearInterval(interval);
   }, [isProcessing]);
 
+  const handleDocumentTypeSelect = (type: string) => {
+    setDocumentType(type);
+  };
+
   const handleIdentitySaved = (verificationId: string, data: { surname: string; givenNames: string; dob: string }) => {
     setVerification((prev) => {
       if (prev) {
@@ -162,25 +169,26 @@ export function VerificationPageClient({ initialData }: VerificationPageClientPr
       // First save — create minimal verification data
       return {
         id: verificationId,
+        document_type: documentType,
+        issuing_country: null,
         identity_status: "processing",
-        wwcc_status: "not_started",
         contact_status: "not_started",
         cross_check_status: "not_started",
         verification_status: 10,
         identity_verified: false,
         identity_rejection_reason: null,
         identity_user_guidance: null,
-        extracted_passport_number: null,
+        selfie_confidence: null,
+        extracted_surname: null,
+        extracted_given_names: null,
+        extracted_dob: null,
         extracted_nationality: null,
-        wwcc_verification_method: null,
-        wwcc_number: null,
-        wwcc_expiry_date: null,
-        wwcc_grant_email_url: null,
-        wwcc_service_nsw_screenshot_url: null,
-        wwcc_doc_verified: false,
-        wwcc_verified: false,
-        wwcc_rejection_reason: null,
-        wwcc_user_guidance: null,
+        extracted_passport_number: null,
+        extracted_passport_expiry: null,
+        extracted_license_number: null,
+        extracted_license_expiry: null,
+        extracted_license_state: null,
+        extracted_license_class: null,
         phone_number: null,
         address_line: null,
         city: null,
@@ -193,12 +201,11 @@ export function VerificationPageClient({ initialData }: VerificationPageClientPr
         surname: data.surname,
         given_names: data.givenNames,
         date_of_birth: data.dob,
-        passport_country: null,
-        passport_upload_url: null,
+        document_upload_url: null,
         identification_photo_url: null,
-      } as VerificationData;
+      } as ParentVerificationData;
     });
-    setOpenSections(["wwcc"]);
+    setOpenSections(["contact"]);
   };
 
   const handleManualReview = () => {
@@ -208,30 +215,11 @@ export function VerificationPageClient({ initialData }: VerificationPageClientPr
         ...prev,
         identity_status: "review",
         identity_user_guidance: null,
-        // Wipe WWCC data client-side to match server
-        wwcc_status: "not_started",
-        wwcc_verification_method: null,
-        wwcc_number: null,
-        wwcc_expiry_date: null,
-        wwcc_grant_email_url: null,
-        wwcc_service_nsw_screenshot_url: null,
-        wwcc_doc_verified: false,
-        wwcc_verified: false,
-        wwcc_rejection_reason: null,
-        wwcc_user_guidance: null,
         cross_check_status: "not_started",
         cross_check_reasoning: null,
       };
     });
     setOpenSections(["identity"]);
-  };
-
-  const handleWWCCSaved = () => {
-    setVerification((prev) => {
-      if (!prev) return prev;
-      return { ...prev, wwcc_status: "pending", wwcc_user_guidance: null };
-    });
-    setOpenSections(["contact"]);
   };
 
   const handleContactSaved = () => {
@@ -247,25 +235,22 @@ export function VerificationPageClient({ initialData }: VerificationPageClientPr
       case "not_started": return null;
       case "pending": return "processing" as const;
       case "processing": return "processing" as const;
-      case "verified": case "doc_verified": case "passed": return "verified" as const;
+      case "verified": case "passed": return "verified" as const;
       case "saved": return "verified" as const;
-      case "review": case "application_pending": return "review" as const;
-      case "rejected": case "barred": return "rejected" as const;
-      case "failed": case "ocg_not_found": case "closed": return "failed" as const;
-      case "expired": return "expired" as const;
+      case "review": return "review" as const;
+      case "rejected": return "rejected" as const;
+      case "failed": return "failed" as const;
       default: return null;
     }
   };
 
   const allVerified =
-    crossCheckStatus === "passed" &&
-    contactStatus === "saved" &&
     identityStatus === "verified" &&
-    (wwccStatus === "doc_verified" || wwccStatus === "verified");
+    contactStatus === "saved" &&
+    (crossCheckStatus === "passed" || crossCheckStatus === "not_started");
 
   // Stepper states
   const identityStep: StepState = identityStatus === "verified" ? "completed" : "current";
-  const wwccStep: StepState = ["verified", "doc_verified"].includes(wwccStatus) ? "completed" : wwccLocked ? "future" : "current";
   const contactStep: StepState = contactStatus === "saved" ? "completed" : contactLocked ? "future" : "current";
   const goalStep: StepState = allVerified ? "completed" : "future";
 
@@ -280,7 +265,7 @@ export function VerificationPageClient({ initialData }: VerificationPageClientPr
           </p>
         ) : (
           <p className="text-sm text-slate-500 mt-1">
-            Complete each section below to verify your account and start being paired with families.
+            Verify your identity to connect with nannies and post babysitting requests.
           </p>
         )}
       </div>
@@ -303,47 +288,31 @@ export function VerificationPageClient({ initialData }: VerificationPageClientPr
                 </div>
               </AccordionTrigger>
               <AccordionContent forceMount>
-                <IdentitySection
-                  verification={verification}
-                  onSaved={handleIdentitySaved}
-                  onManualReview={handleManualReview}
-                />
-              </AccordionContent>
-            </AccordionItem>
-          </div>
-        </div>
-
-        {/* Step 2: Verify WWCC */}
-        <div className="flex gap-3">
-          <StepIndicator state={wwccStep} topLineColor={stepLineColor(identityStep)} />
-          <div className="flex-1 pb-3">
-            <AccordionItem value="wwcc" className="border-0" disabled={wwccLocked}>
-              <AccordionTrigger className="hover:no-underline" disabled={wwccLocked}>
-                <div className="flex items-center gap-3">
-                  <span className={`text-base font-semibold ${wwccLocked ? "text-slate-400" : "text-slate-800"}`}>
-                    Verify WWCC
-                  </span>
-                  {identityInReview && <span className="text-xs text-amber-600">Waiting for ID review</span>}
-                  {!wwccLocked && getBadgeStatus(wwccStatus) && (
-                    <SectionStatusBadge status={getBadgeStatus(wwccStatus)!} />
+                <div className="space-y-6">
+                  {identityStatus !== "verified" && (
+                    <DocumentTypeSelector
+                      selected={documentType}
+                      onSelect={handleDocumentTypeSelect}
+                      disabled={identityStatus !== "not_started" && identityStatus !== "failed" && identityStatus !== "rejected"}
+                    />
+                  )}
+                  {documentType && (
+                    <ParentIdentitySection
+                      verification={verification}
+                      documentType={documentType}
+                      onSaved={handleIdentitySaved}
+                      onManualReview={handleManualReview}
+                    />
                   )}
                 </div>
-              </AccordionTrigger>
-              <AccordionContent forceMount>
-                <WWCCSection
-                  verification={verification}
-                  locked={wwccLocked}
-                  identityInReview={identityInReview}
-                  onSaved={handleWWCCSaved}
-                />
               </AccordionContent>
             </AccordionItem>
           </div>
         </div>
 
-        {/* Step 3: Verify Contact Information */}
+        {/* Step 2: Contact Information */}
         <div className="flex gap-3">
-          <StepIndicator state={contactStep} topLineColor={stepLineColor(wwccStep)} />
+          <StepIndicator state={contactStep} topLineColor={stepLineColor(identityStep)} />
           <div className="flex-1 pb-3">
             <AccordionItem value="contact" className="border-0" disabled={contactLocked}>
               <AccordionTrigger className="hover:no-underline" disabled={contactLocked}>
@@ -357,7 +326,7 @@ export function VerificationPageClient({ initialData }: VerificationPageClientPr
                 </div>
               </AccordionTrigger>
               <AccordionContent forceMount>
-                <ContactSection
+                <ParentContactSection
                   verification={verification}
                   locked={contactLocked}
                   onSaved={handleContactSaved}
@@ -367,12 +336,12 @@ export function VerificationPageClient({ initialData }: VerificationPageClientPr
           </div>
         </div>
 
-        {/* Step 4: Connect with Families (goal step — no accordion) */}
+        {/* Step 3: Find Childcare Professional (goal step — no accordion) */}
         <div className="flex gap-3">
           <StepIndicator state={goalStep} isLast topLineColor={stepLineColor(contactStep)} />
           <div className="py-4">
             <span className={`text-base font-semibold ${allVerified ? "text-green-700" : "text-slate-300"}`}>
-              Connect with Families
+              Find Childcare Professional
             </span>
           </div>
         </div>
@@ -381,21 +350,11 @@ export function VerificationPageClient({ initialData }: VerificationPageClientPr
       {allVerified && (
         <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
           <Button asChild className="bg-violet-600 hover:bg-violet-700 text-white">
-            <Link href="/nanny/dashboard">Match with families</Link>
+            <Link href="/parent/browse">Find a Nanny</Link>
           </Button>
           <Button asChild variant="outline" className="border-violet-300 text-violet-700 hover:bg-violet-50">
-            <Link href="/nanny/babysitting">Babysit for families</Link>
+            <Link href="/parent/babysitting">Find a Babysitter</Link>
           </Button>
-        </div>
-      )}
-
-      {/* Cross-check review */}
-      {crossCheckStatus === "review" && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-700">
-          <p className="font-medium">Cross-check under review</p>
-          <p className="mt-1">
-            {verification?.cross_check_reasoning ?? "Our team is reviewing a discrepancy between your passport and WWCC details."}
-          </p>
         </div>
       )}
     </div>

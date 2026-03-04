@@ -5,7 +5,8 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { createConnectionRequest } from "@/lib/actions/connection";
-import { X, Loader2, MapPin, Check, Phone, Send, UserCheck, Clock } from "lucide-react";
+import { X, Loader2, MapPin, Check, Phone, Send, UserCheck, Clock, ShieldAlert } from "lucide-react";
+import Link from "next/link";
 
 interface ConnectModalProps {
   isOpen: boolean;
@@ -27,6 +28,7 @@ export function ConnectModal({ isOpen, onClose, nanny, pendingRequestCount }: Co
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [verificationRequired, setVerificationRequired] = useState(false);
 
   if (!isOpen) return null;
 
@@ -53,6 +55,8 @@ export function ConnectModal({ isOpen, onClose, nanny, pendingRequestCount }: Co
         onClose();
         router.push('/parent/connections');
       }, 2000);
+    } else if (result.error === 'VERIFICATION_REQUIRED') {
+      setVerificationRequired(true);
     } else {
       setError(result.error || "Failed to send request");
     }
@@ -75,7 +79,25 @@ export function ConnectModal({ isOpen, onClose, nanny, pendingRequestCount }: Co
           </div>
         </CardHeader>
         <CardContent>
-          {success ? (
+          {verificationRequired ? (
+            <div className="flex flex-col items-center py-8 space-y-4">
+              <div className="mb-2 rounded-full bg-amber-100 p-3">
+                <ShieldAlert className="h-8 w-8 text-amber-600" />
+              </div>
+              <h3 className="text-lg font-semibold text-slate-900">Identity Verification Required</h3>
+              <p className="text-center text-sm text-slate-500">
+                To protect our families and nannies, we require all parents to verify their identity before connecting.
+              </p>
+              <div className="flex gap-3 w-full">
+                <Button variant="outline" className="flex-1" onClick={onClose}>
+                  Cancel
+                </Button>
+                <Button asChild className="flex-1 bg-violet-500 hover:bg-violet-600">
+                  <Link href="/parent/verification">Verify Now</Link>
+                </Button>
+              </div>
+            </div>
+          ) : success ? (
             <div className="flex flex-col items-center py-8">
               <div className="mb-4 rounded-full bg-green-100 p-3">
                 <Check className="h-8 w-8 text-green-600" />

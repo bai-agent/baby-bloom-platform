@@ -325,13 +325,30 @@ export async function verifyPassport(
     };
   } catch (error) {
     console.error('[verifyPassport] AI analysis failed:', error);
+
+    // Detect OpenAI unsupported image format error
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    const isUnsupportedFormat = errorMsg.includes('unsupported image') || errorMsg.includes('Could not process image');
+
     return {
       pass: false,
       extracted: { surname: null, given_names: null, dob: null, nationality: null, passport_number: null, expiry: null },
       selfie_confidence: null,
-      reasoning: `AI analysis failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-      issues: ['AI analysis failed — please review manually'],
-      user_guidance: null,
+      reasoning: `AI analysis failed: ${errorMsg}`,
+      issues: [isUnsupportedFormat
+        ? 'Unsupported image format — only PNG, JPEG, GIF, and WebP are accepted'
+        : 'AI analysis failed — please review manually'],
+      user_guidance: isUnsupportedFormat
+        ? {
+            title: 'Unsupported Image Format',
+            explanation: 'One of your uploaded images is in a format we can\'t process (e.g. HEIC). We only support PNG, JPEG, and WebP.',
+            steps_to_fix: [
+              'Re-upload your passport as a PNG or JPEG image',
+              'Re-upload your selfie as a PNG or JPEG image',
+              'On iPhone, take a screenshot of the photo and upload that instead',
+            ],
+          }
+        : null,
     };
   }
 }

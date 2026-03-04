@@ -576,6 +576,17 @@ export async function createBabysittingRequest(data: {
     return { success: false, error: 'Not authenticated as parent' };
   }
 
+  // Check parent verification
+  const { data: parentRecord } = await adminClient
+    .from('parents')
+    .select('verification_level')
+    .eq('id', parentId)
+    .single();
+
+  if (!parentRecord || (parentRecord.verification_level ?? 0) < 1) {
+    return { success: false, error: 'VERIFICATION_REQUIRED' };
+  }
+
   // Validate time slots
   if (!data.timeSlots || data.timeSlots.length === 0) {
     return { success: false, error: 'At least one time slot is required' };

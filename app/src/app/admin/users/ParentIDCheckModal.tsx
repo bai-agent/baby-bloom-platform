@@ -11,15 +11,45 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
-import { adminVerifyIdentity, adminRejectIdentity } from "@/lib/actions/admin";
+import { adminVerifyParentIdentity, adminRejectParentIdentity } from "@/lib/actions/admin";
 import { formatRelativeTime } from "@/lib/utils";
-import { AlertTriangle, CheckCircle2, X, Loader2, ImageOff, Pencil } from "lucide-react";
-import type { PendingIdentityCheck } from "./page";
+import { AlertTriangle, CheckCircle2, X, Loader2, ImageOff } from "lucide-react";
 
-interface IDCheckModalProps {
-  check: PendingIdentityCheck | null;
+export interface PendingParentIdentityCheck {
+  id: string;
+  user_id: string;
+  document_type: string | null;
+  issuing_country: string | null;
+  surname: string | null;
+  given_names: string | null;
+  date_of_birth: string | null;
+  document_upload_url: string | null;
+  identification_photo_url: string | null;
+  identity_verified: boolean;
+  identity_rejection_reason: string | null;
+  verification_status: number;
+  selfie_confidence: number | null;
+  extracted_surname: string | null;
+  extracted_given_names: string | null;
+  extracted_dob: string | null;
+  extracted_nationality: string | null;
+  extracted_passport_number: string | null;
+  extracted_passport_expiry: string | null;
+  extracted_license_number: string | null;
+  extracted_license_expiry: string | null;
+  extracted_license_state: string | null;
+  extracted_license_class: string | null;
+  identity_ai_reasoning: string | null;
+  identity_ai_issues: string | null;
+  created_at: string;
+  first_name: string | null;
+  last_name: string | null;
+  email: string | null;
+}
+
+interface ParentIDCheckModalProps {
+  check: PendingParentIdentityCheck | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }
@@ -39,11 +69,10 @@ const COUNTRY_NATIONALITY_MAP: Record<string, string[]> = {
 };
 
 function isNationalityMatch(country: string | null, nationality: string | null): boolean {
-  if (!country || !nationality) return true; // no data = no mismatch
+  if (!country || !nationality) return true;
   const c = country.toLowerCase().trim();
   const n = nationality.toLowerCase().trim();
   if (c === n) return true;
-  // Check if either value appears in the other's equivalence group
   for (const [key, aliases] of Object.entries(COUNTRY_NATIONALITY_MAP)) {
     const group = [key, ...aliases];
     if (group.includes(c) && group.includes(n)) return true;
@@ -83,20 +112,30 @@ function DetailRow({ label, submitted, extracted, isNationality, isGivenNames }:
   );
 }
 
-export function IDCheckModal({ check, open, onOpenChange }: IDCheckModalProps) {
+function ConfidenceBadge({ confidence }: { confidence: number }) {
+  const color = confidence >= 75 ? "text-green-700 bg-green-100 border-green-200"
+    : confidence >= 50 ? "text-amber-700 bg-amber-100 border-amber-200"
+    : "text-red-700 bg-red-100 border-red-200";
+  return (
+    <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold ${color}`}>
+      Selfie match: {confidence}%
+    </span>
+  );
+}
+
+export function ParentIDCheckModal({ check, open, onOpenChange }: ParentIDCheckModalProps) {
   const router = useRouter();
   const [comments, setComments] = useState("");
   const [confirmAction, setConfirmAction] = useState<"verify" | "reject" | null>(null);
   const [loading, setLoading] = useState(false);
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
-  const [editing, setEditing] = useState(false);
-  const [editedFields, setEditedFields] = useState<Record<string, string>>({});
 
   if (!check) return null;
 
   const name = `${check.first_name || ""} ${check.last_name || ""}`.trim() || "Unknown";
+  const isPassport = check.document_type === "passport";
+  const docLabel = isPassport ? "Passport" : "Driver's License";
 
-  // AI data helpers
   const hasAIData = !!(check.extracted_surname || check.extracted_given_names || check.extracted_dob || check.identity_ai_reasoning);
   const aiIssues: string[] = (() => {
     if (!check.identity_ai_issues) return [];
@@ -105,18 +144,13 @@ export function IDCheckModal({ check, open, onOpenChange }: IDCheckModalProps) {
 
   function formatDate(dateStr: string | null): string {
     if (!dateStr) return "-";
-    return new Date(dateStr).toLocaleDateString("en-AU", {
-      day: "numeric",
-      month: "short",
-      year: "numeric",
-    });
+    return new Date(dateStr).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" });
   }
 
   async function handleVerify() {
     setLoading(true);
-    const result = await adminVerifyIdentity(check!.id);
+    const result = await adminVerifyParentIdentity(check!.id);
     setLoading(false);
-
     if (result.success) {
       setConfirmAction(null);
       setComments("");
@@ -133,9 +167,8 @@ export function IDCheckModal({ check, open, onOpenChange }: IDCheckModalProps) {
       return;
     }
     setLoading(true);
-    const result = await adminRejectIdentity(check!.id, comments);
+    const result = await adminRejectParentIdentity(check!.id, comments);
     setLoading(false);
-
     if (result.success) {
       setConfirmAction(null);
       setComments("");
@@ -151,8 +184,6 @@ export function IDCheckModal({ check, open, onOpenChange }: IDCheckModalProps) {
       setConfirmAction(null);
       setComments("");
       setZoomedImage(null);
-      setEditing(false);
-      setEditedFields({});
     }
     onOpenChange(openState);
   }
@@ -162,19 +193,20 @@ export function IDCheckModal({ check, open, onOpenChange }: IDCheckModalProps) {
       <Dialog open={open} onOpenChange={handleClose}>
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Identity Verification Review</DialogTitle>
+            <DialogTitle>Parent Identity Verification</DialogTitle>
             <DialogDescription>
-              {name} — submitted {formatRelativeTime(check.created_at)}
+              {name} — {docLabel} — submitted {formatRelativeTime(check.created_at)}
+              {check.selfie_confidence !== null && (
+                <span className="ml-2"><ConfidenceBadge confidence={check.selfie_confidence} /></span>
+              )}
             </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4 mt-2">
-            {/* Photo Comparison — Selfie left, Passport right */}
+            {/* Photo Comparison */}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
-                <p className="mb-1 text-xs font-semibold text-slate-500 uppercase">
-                  Identification Photo
-                </p>
+                <p className="mb-1 text-xs font-semibold text-slate-500 uppercase">Identification Photo</p>
                 {check.identification_photo_url ? (
                   <img
                     src={check.identification_photo_url}
@@ -192,15 +224,13 @@ export function IDCheckModal({ check, open, onOpenChange }: IDCheckModalProps) {
                 )}
               </div>
               <div>
-                <p className="mb-1 text-xs font-semibold text-slate-500 uppercase">
-                  Passport Photo
-                </p>
-                {check.passport_upload_url ? (
+                <p className="mb-1 text-xs font-semibold text-slate-500 uppercase">{docLabel} Photo</p>
+                {check.document_upload_url ? (
                   <img
-                    src={check.passport_upload_url}
-                    alt="Passport"
+                    src={check.document_upload_url}
+                    alt={docLabel}
                     className="w-full max-h-52 rounded-lg border-2 border-slate-200 object-contain cursor-zoom-in bg-slate-50"
-                    onClick={() => setZoomedImage(check.passport_upload_url!)}
+                    onClick={() => setZoomedImage(check.document_upload_url!)}
                   />
                 ) : (
                   <div className="flex h-52 items-center justify-center rounded-lg border-2 border-dashed border-slate-200 bg-slate-50">
@@ -221,6 +251,10 @@ export function IDCheckModal({ check, open, onOpenChange }: IDCheckModalProps) {
                   <h3 className="mb-2 text-sm font-semibold text-slate-700">Submitted Details</h3>
                   <div className="space-y-1.5 text-sm">
                     <div className="flex justify-between">
+                      <span className="font-medium text-slate-500">Document Type</span>
+                      <span>{docLabel}</span>
+                    </div>
+                    <div className="flex justify-between">
                       <span className="font-medium text-slate-500">Surname</span>
                       <span>{check.surname || "-"}</span>
                     </div>
@@ -234,77 +268,54 @@ export function IDCheckModal({ check, open, onOpenChange }: IDCheckModalProps) {
                     </div>
                     <div className="flex justify-between">
                       <span className="font-medium text-slate-500">Country of Issue</span>
-                      <span>{check.passport_country || "-"}</span>
+                      <span>{check.issuing_country || "-"}</span>
                     </div>
                   </div>
                 </CardContent>
               </Card>
 
-              {/* AI Extracted Details (editable) */}
+              {/* AI Extracted Details */}
               <Card className={hasAIData ? "border-slate-200" : "border-dashed"}>
                 <CardContent className="p-4">
-                  <div className="mb-2 flex items-center justify-between">
-                    <h3 className="text-sm font-semibold text-slate-700">AI Extracted Details</h3>
-                    {hasAIData && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (!editing) {
-                            setEditedFields({
-                              extracted_surname: check.extracted_surname ?? '',
-                              extracted_given_names: check.extracted_given_names ?? '',
-                              extracted_dob: check.extracted_dob ?? '',
-                              extracted_nationality: check.extracted_nationality ?? '',
-                              extracted_passport_number: check.extracted_passport_number ?? '',
-                              extracted_passport_expiry: check.extracted_passport_expiry ?? '',
-                            });
-                          }
-                          setEditing(!editing);
-                        }}
-                        className="flex items-center gap-1 text-xs text-violet-600 hover:text-violet-800"
-                      >
-                        <Pencil className="h-3 w-3" />
-                        {editing ? 'Done' : 'Edit'}
-                      </button>
-                    )}
-                  </div>
+                  <h3 className="mb-2 text-sm font-semibold text-slate-700">AI Extracted Details</h3>
                   {hasAIData ? (
-                    editing ? (
-                      <div className="space-y-2 text-sm">
-                        {[
-                          { key: 'extracted_surname', label: 'Surname' },
-                          { key: 'extracted_given_names', label: 'Given Name(s)' },
-                          { key: 'extracted_dob', label: 'Date of Birth' },
-                          { key: 'extracted_nationality', label: 'Nationality' },
-                          { key: 'extracted_passport_number', label: 'Passport #' },
-                          { key: 'extracted_passport_expiry', label: 'Expiry' },
-                        ].map(({ key, label }) => (
-                          <div key={key} className="flex items-center gap-2">
-                            <span className="w-28 shrink-0 font-medium text-slate-500">{label}</span>
-                            <Input
-                              value={editedFields[key] ?? ''}
-                              onChange={(e) => setEditedFields(prev => ({ ...prev, [key]: e.target.value }))}
-                              className="h-7 text-sm"
-                            />
+                    <div className="space-y-1.5 text-sm">
+                      <DetailRow label="Surname" submitted={check.surname} extracted={check.extracted_surname} />
+                      <DetailRow label="Given Name(s)" submitted={check.given_names} extracted={check.extracted_given_names} isGivenNames />
+                      <DetailRow label="Date of Birth" submitted={check.date_of_birth} extracted={check.extracted_dob} />
+                      {isPassport ? (
+                        <>
+                          <DetailRow label="Nationality" submitted={check.issuing_country} extracted={check.extracted_nationality} isNationality />
+                          <div className="flex justify-between">
+                            <span className="font-medium text-slate-500">Passport #</span>
+                            <span>{check.extracted_passport_number || "-"}</span>
                           </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="space-y-1.5 text-sm">
-                        <DetailRow label="Surname" submitted={check.surname} extracted={check.extracted_surname} />
-                        <DetailRow label="Given Name(s)" submitted={check.given_names} extracted={check.extracted_given_names} isGivenNames />
-                        <DetailRow label="Date of Birth" submitted={check.date_of_birth} extracted={check.extracted_dob} />
-                        <DetailRow label="Nationality" submitted={check.passport_country} extracted={check.extracted_nationality} isNationality />
-                        <div className="flex justify-between">
-                          <span className="font-medium text-slate-500">Passport #</span>
-                          <span>{check.extracted_passport_number || "-"}</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="font-medium text-slate-500">Expiry</span>
-                          <span>{check.extracted_passport_expiry ? formatDate(check.extracted_passport_expiry) : "-"}</span>
-                        </div>
-                      </div>
-                    )
+                          <div className="flex justify-between">
+                            <span className="font-medium text-slate-500">Expiry</span>
+                            <span>{check.extracted_passport_expiry ? formatDate(check.extracted_passport_expiry) : "-"}</span>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="flex justify-between">
+                            <span className="font-medium text-slate-500">License #</span>
+                            <span>{check.extracted_license_number || "-"}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="font-medium text-slate-500">Expiry</span>
+                            <span>{check.extracted_license_expiry ? formatDate(check.extracted_license_expiry) : "-"}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="font-medium text-slate-500">State</span>
+                            <span>{check.extracted_license_state || "-"}</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="font-medium text-slate-500">Class</span>
+                            <span>{check.extracted_license_class || "-"}</span>
+                          </div>
+                        </>
+                      )}
+                    </div>
                   ) : (
                     <div className="flex h-24 items-center justify-center">
                       <div className="rounded-lg bg-yellow-50 border border-yellow-200 px-3 py-2">
@@ -316,7 +327,7 @@ export function IDCheckModal({ check, open, onOpenChange }: IDCheckModalProps) {
               </Card>
             </div>
 
-            {/* AI Flagged Issues */}
+            {/* AI Flagged Issues / Pass */}
             {hasAIData ? (
               aiIssues.length > 0 ? (
                 <Card className="border-red-200 bg-red-50">
@@ -386,13 +397,11 @@ export function IDCheckModal({ check, open, onOpenChange }: IDCheckModalProps) {
               </Card>
             )}
 
-            {/* Previous rejection reason (if re-review) */}
+            {/* Previous rejection reason */}
             {check.identity_rejection_reason && (
               <Card className="border-yellow-200 bg-yellow-50">
                 <CardContent className="p-4">
-                  <h3 className="mb-1 text-sm font-semibold text-yellow-700">
-                    Previous Rejection Reason
-                  </h3>
+                  <h3 className="mb-1 text-sm font-semibold text-yellow-700">Previous Rejection Reason</h3>
                   <p className="text-sm text-yellow-800">{check.identity_rejection_reason}</p>
                 </CardContent>
               </Card>
@@ -407,11 +416,11 @@ export function IDCheckModal({ check, open, onOpenChange }: IDCheckModalProps) {
               {confirmAction === "reject" && (
                 <div className="flex flex-wrap gap-2 mb-2">
                   {[
-                    "Your surname does not match your passport",
-                    "Your date of birth does not match your passport",
-                    "Your passport has expired",
-                    "Your passport image is unclear or unreadable",
-                    "Your selfie does not match the photo on your passport",
+                    "Your surname does not match your document",
+                    "Your date of birth does not match your document",
+                    "Your document has expired",
+                    "Your document image is unclear or unreadable",
+                    "Your selfie does not match the photo on your document",
                     "Your selfie does not meet requirements",
                   ].map((reason) => (
                     <button
@@ -447,7 +456,7 @@ export function IDCheckModal({ check, open, onOpenChange }: IDCheckModalProps) {
                     onClick={() => setConfirmAction("verify")}
                   >
                     <CheckCircle2 className="mr-2 h-4 w-4" />
-                    VERIFY USER
+                    VERIFY PARENT
                   </Button>
                   <Button
                     variant="outline"
@@ -461,7 +470,7 @@ export function IDCheckModal({ check, open, onOpenChange }: IDCheckModalProps) {
               ) : confirmAction === "verify" ? (
                 <div className="flex flex-1 items-center gap-3 rounded-lg border border-green-200 bg-green-50 p-3">
                   <span className="text-sm font-medium text-green-700">
-                    Are you sure you want to verify this user?
+                    Are you sure you want to verify this parent?
                   </span>
                   <div className="ml-auto flex gap-2">
                     <Button
@@ -472,12 +481,7 @@ export function IDCheckModal({ check, open, onOpenChange }: IDCheckModalProps) {
                     >
                       {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Yes, Verify"}
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => setConfirmAction(null)}
-                      disabled={loading}
-                    >
+                    <Button size="sm" variant="ghost" onClick={() => setConfirmAction(null)} disabled={loading}>
                       Cancel
                     </Button>
                   </div>
@@ -497,12 +501,7 @@ export function IDCheckModal({ check, open, onOpenChange }: IDCheckModalProps) {
                     >
                       {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Yes, Reject"}
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => setConfirmAction(null)}
-                      disabled={loading}
-                    >
+                    <Button size="sm" variant="ghost" onClick={() => setConfirmAction(null)} disabled={loading}>
                       Cancel
                     </Button>
                   </div>
@@ -513,7 +512,7 @@ export function IDCheckModal({ check, open, onOpenChange }: IDCheckModalProps) {
         </DialogContent>
       </Dialog>
 
-      {/* Image Zoom Overlay — portal outside Dialog to avoid click interception */}
+      {/* Image Zoom Overlay */}
       {zoomedImage && (
         <div
           className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 p-4 cursor-pointer"
