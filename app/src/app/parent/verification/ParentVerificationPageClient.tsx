@@ -265,7 +265,7 @@ export function ParentVerificationPageClient({ initialData }: ParentVerification
           </p>
         ) : (
           <p className="text-sm text-slate-500 mt-1">
-            Verify your identity to connect with nannies and post babysitting requests.
+            For the protection of our families and childcare professionals, all users must complete the same gold-standard verification before we will connect them with each other.
           </p>
         )}
       </div>

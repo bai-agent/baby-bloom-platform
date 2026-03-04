@@ -280,7 +280,7 @@ export function VerificationPageClient({ initialData }: VerificationPageClientPr
           </p>
         ) : (
           <p className="text-sm text-slate-500 mt-1">
-            Complete each section below to verify your account and start being paired with families.
+            For the protection of our childcare professionals and families, all users must complete the same gold-standard verification before we will connect them with each other.
           </p>
         )}
       </div>

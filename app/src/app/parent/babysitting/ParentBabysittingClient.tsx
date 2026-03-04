@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,7 @@ import {
   Loader2,
   ChevronRight,
   ChevronDown,
+  Check,
   CheckCircle,
   AlertCircle,
   ArrowLeft,
@@ -110,6 +111,38 @@ function formatTime(time: string): string {
   return m === 0 ? `${h12}${ampm}` : `${h12}:${String(m).padStart(2, "0")}${ampm}`;
 }
 
+// ── GNAF Address Types ──
+
+interface AddressrResult {
+  sla: string;
+  ssla?: string;
+  pid: string;
+  score: number;
+}
+
+interface ParsedAddress {
+  street: string;
+  suburb: string;
+  postcode: string;
+}
+
+function toTitleCase(str: string): string {
+  return str.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/** Parse GNAF single-line address into street, suburb, postcode */
+function parseGnafAddress(sla: string): ParsedAddress | null {
+  const match = sla.match(/^(.+),\s+([A-Z\s]+?)\s+NSW\s+(\d{4})$/);
+  if (!match) return null;
+  const postcode = match[3];
+  const fullBeforeState = sla.substring(0, sla.lastIndexOf("NSW")).trim().replace(/,\s*$/, "");
+  const lastComma = fullBeforeState.lastIndexOf(",");
+  if (lastComma < 0) return null;
+  const street = fullBeforeState.substring(0, lastComma).trim();
+  const suburb = fullBeforeState.substring(lastComma + 1).trim();
+  return { street: toTitleCase(street), suburb: toTitleCase(suburb), postcode };
+}
+
 // ── Main Component ──
 
 interface ParentBabysittingClientProps {
@@ -128,13 +161,14 @@ export function ParentBabysittingClient({ requests, suburbs }: ParentBabysitting
   const [slots, setSlots] = useState<TimeSlotForm[]>([
     { id: 1, date: "", startTime: "18:00", endTime: "22:00" },
   ]);
-  const [selectedSuburb, setSelectedSuburb] = useState("");
-  const [selectedPostcode, setSelectedPostcode] = useState("");
-  const [streetAddress, setStreetAddress] = useState("");
-  const [suburbQuery, setSuburbQuery] = useState("");
-  const [filteredSuburbs, setFilteredSuburbs] = useState<Array<{ suburb: string; postcode: string }>>([]);
-  const [showSuburbDropdown, setShowSuburbDropdown] = useState(false);
-  const suburbDropdownRef = useRef<HTMLDivElement>(null);
+  const [addressQuery, setAddressQuery] = useState("");
+  const [selectedAddress, setSelectedAddress] = useState<ParsedAddress | null>(null);
+  const [addressResults, setAddressResults] = useState<AddressrResult[]>([]);
+  const [showAddressDropdown, setShowAddressDropdown] = useState(false);
+  const [addressLoading, setAddressLoading] = useState(false);
+  const [notInArea, setNotInArea] = useState(false);
+  const addressDropdownRef = useRef<HTMLDivElement>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [numChildren, setNumChildren] = useState(0);
   const [children, setChildren] = useState<ChildForm[]>([]);
   const [hourlyRate, setHourlyRate] = useState(35);
@@ -145,37 +179,83 @@ export function ParentBabysittingClient({ requests, suburbs }: ParentBabysitting
   // Close suburb dropdown on outside click
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (suburbDropdownRef.current && !suburbDropdownRef.current.contains(e.target as Node)) {
-        setShowSuburbDropdown(false);
+      if (addressDropdownRef.current && !addressDropdownRef.current.contains(e.target as Node)) {
+        setShowAddressDropdown(false);
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const handleSuburbSearch = (val: string) => {
-    setSuburbQuery(val);
-    setSelectedSuburb("");
-    setSelectedPostcode("");
-    if (val.trim().length >= 2) {
-      const q = val.toLowerCase().trim();
-      const matches = suburbs
-        .filter((s) => s.suburb.toLowerCase().includes(q) || s.postcode.includes(q))
-        .slice(0, 10);
-      setFilteredSuburbs(matches);
-      setShowSuburbDropdown(matches.length > 0);
-    } else {
-      setFilteredSuburbs([]);
-      setShowSuburbDropdown(false);
+  // GNAF address search — debounced, NSW only
+  const searchAddress = useCallback((query: string) => {
+    if (query.trim().length < 4) {
+      setAddressResults([]);
+      setShowAddressDropdown(false);
+      return;
     }
-  };
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(async () => {
+      setAddressLoading(true);
+      try {
+        const res = await fetch(
+          `https://api.addressr.io/addresses?q=${encodeURIComponent(query)}`
+        );
+        if (!res.ok) {
+          setAddressResults([]);
+          setShowAddressDropdown(false);
+          return;
+        }
+        const data: AddressrResult[] = await res.json();
+        const nswOnly = data.filter((r) => r.sla.includes(" NSW "));
+        setAddressResults(nswOnly.slice(0, 8));
+        setShowAddressDropdown(nswOnly.length > 0);
+      } catch {
+        setAddressResults([]);
+        setShowAddressDropdown(false);
+      } finally {
+        setAddressLoading(false);
+      }
+    }, 300);
+  }, []);
 
-  const handleSuburbSelect = (entry: { suburb: string; postcode: string }) => {
-    setSuburbQuery(`${entry.suburb}, ${entry.postcode}`);
-    setSelectedSuburb(entry.suburb);
-    setSelectedPostcode(entry.postcode);
-    setShowSuburbDropdown(false);
-  };
+  function handleAddressChange(val: string) {
+    setAddressQuery(val);
+    setSelectedAddress(null);
+    setNotInArea(false);
+    searchAddress(val);
+  }
+
+  function handleAddressSelect(result: AddressrResult) {
+    const parsed = parseGnafAddress(result.ssla || result.sla);
+    if (!parsed) {
+      setShowAddressDropdown(false);
+      return;
+    }
+
+    // Cross-reference with sydney_postcodes for canonical suburb name
+    const byPostcode = suburbs.filter(s => s.postcode === parsed.postcode);
+    if (byPostcode.length === 0) {
+      setNotInArea(true);
+      setSelectedAddress(null);
+      setAddressQuery(toTitleCase(result.ssla || result.sla));
+      setShowAddressDropdown(false);
+      return;
+    }
+
+    const exact = byPostcode.find(s => s.suburb.toLowerCase() === parsed.suburb.toLowerCase());
+    const canonical = exact || byPostcode[0];
+
+    setAddressQuery(parsed.street);
+    setSelectedAddress({
+      street: parsed.street,
+      suburb: canonical.suburb,
+      postcode: canonical.postcode,
+    });
+    setShowAddressDropdown(false);
+    setAddressResults([]);
+    setNotInArea(false);
+  }
 
   const nextSlotId = slots.length > 0 ? Math.max(...slots.map((s) => s.id)) + 1 : 1;
 
@@ -221,10 +301,10 @@ export function ParentBabysittingClient({ requests, suburbs }: ParentBabysitting
   const resetForm = () => {
     setFormStep(1);
     setSlots([{ id: 1, date: "", startTime: "18:00", endTime: "22:00" }]);
-    setSelectedSuburb("");
-    setSelectedPostcode("");
-    setStreetAddress("");
-    setSuburbQuery("");
+    setAddressQuery("");
+    setSelectedAddress(null);
+    setAddressResults([]);
+    setNotInArea(false);
     setNumChildren(0);
     setChildren([]);
     setHourlyRate(35);
@@ -237,8 +317,7 @@ export function ParentBabysittingClient({ requests, suburbs }: ParentBabysitting
       if (numChildren === 0 || children.length === 0) return "Please select the number of children";
     }
     if (step === 2) {
-      if (!streetAddress.trim()) return "Please enter the street address";
-      if (!selectedSuburb || !selectedPostcode) return "Please select a suburb";
+      if (!selectedAddress) return "Please select an address from the dropdown";
     }
     if (step === 3) {
       for (const slot of slots) {
@@ -277,9 +356,9 @@ export function ParentBabysittingClient({ requests, suburbs }: ParentBabysitting
         ageMonths: c.ageMonths,
         gender: c.gender,
       })),
-      suburb: selectedSuburb,
-      postcode: selectedPostcode,
-      address: streetAddress.trim(),
+      suburb: selectedAddress!.suburb,
+      postcode: selectedAddress!.postcode,
+      address: selectedAddress!.street,
       hourlyRate,
       specialRequirements: specialRequirements || undefined,
     });
@@ -426,49 +505,53 @@ export function ParentBabysittingClient({ requests, suburbs }: ParentBabysitting
                   Where will the babysitting take place?
                 </p>
                 <div className="space-y-2">
-                  <Label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
-                    Street Address
-                  </Label>
-                  <Input
-                    placeholder="e.g. 42 Bondi Road"
-                    value={streetAddress}
-                    onChange={(e) => setStreetAddress(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2 relative" ref={suburbDropdownRef}>
-                  <Label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
-                    Suburb & Postcode
-                  </Label>
-                  <Input
-                    placeholder="Start typing suburb or postcode..."
-                    value={suburbQuery}
-                    onChange={(e) => handleSuburbSearch(e.target.value)}
-                    onFocus={() => { if (filteredSuburbs.length > 0) setShowSuburbDropdown(true); }}
-                    autoComplete="off"
-                  />
-                  {showSuburbDropdown && filteredSuburbs.length > 0 && (
-                    <div className="absolute z-50 mt-1 w-full max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg">
-                      {filteredSuburbs.map((entry) => (
-                        <button
-                          key={`${entry.suburb}-${entry.postcode}`}
-                          type="button"
-                          onClick={() => handleSuburbSelect(entry)}
-                          className="w-full px-4 py-2.5 text-left text-sm text-slate-700 hover:bg-violet-50 hover:text-violet-700 cursor-pointer"
-                        >
-                          {entry.suburb}, {entry.postcode}
-                        </button>
-                      ))}
+                  <div className="flex items-baseline justify-between">
+                    <Label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                      Address
+                    </Label>
+                    <span className="text-xs text-slate-400">NSW only</span>
+                  </div>
+                  <div className="relative" ref={addressDropdownRef}>
+                    <div className="relative">
+                      <Input
+                        placeholder="Start typing your address..."
+                        value={addressQuery}
+                        onChange={(e) => handleAddressChange(e.target.value)}
+                        onFocus={() => {
+                          if (addressResults.length > 0) setShowAddressDropdown(true);
+                        }}
+                        autoComplete="off"
+                      />
+                      {addressLoading && (
+                        <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-slate-400" />
+                      )}
                     </div>
-                  )}
-                  {selectedSuburb && (
-                    <p className="text-xs text-green-600 font-medium">{selectedSuburb}, NSW {selectedPostcode}</p>
-                  )}
-                </div>
-                <div className="space-y-2">
-                  <Label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
-                    State
-                  </Label>
-                  <Input value="NSW" disabled className="bg-slate-50" />
+                    {showAddressDropdown && (
+                      <div className="absolute z-50 mt-1 w-full max-h-48 overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-lg">
+                        {addressResults.map((r) => (
+                          <button
+                            key={r.pid}
+                            type="button"
+                            onClick={() => handleAddressSelect(r)}
+                            className="w-full px-4 py-2.5 text-left text-sm text-slate-700 hover:bg-violet-50 hover:text-violet-700 cursor-pointer"
+                          >
+                            {toTitleCase(r.ssla || r.sla)}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {selectedAddress && (
+                      <p className="text-xs text-green-600 font-medium mt-1.5 flex items-center gap-1">
+                        {selectedAddress.street}, {selectedAddress.suburb} NSW {selectedAddress.postcode}
+                        <Check className="h-3 w-3" />
+                      </p>
+                    )}
+                    {notInArea && (
+                      <p className="text-xs text-amber-600 mt-1.5">
+                        This address is outside our service area. We currently only operate in Greater Sydney, NSW.
+                      </p>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
@@ -617,8 +700,8 @@ export function ParentBabysittingClient({ requests, suburbs }: ParentBabysitting
                 <div className="flex items-start justify-between">
                   <div>
                     <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Location</p>
-                    <p className="text-sm text-slate-700">{streetAddress}</p>
-                    <p className="text-sm text-slate-500">{selectedSuburb}, NSW {selectedPostcode}</p>
+                    <p className="text-sm text-slate-700">{selectedAddress?.street}</p>
+                    <p className="text-sm text-slate-500">{selectedAddress?.suburb}, NSW {selectedAddress?.postcode}</p>
                   </div>
                   <button type="button" onClick={() => setFormStep(2)} className="text-violet-500 hover:text-violet-700 p-1">
                     <Pencil className="h-3.5 w-3.5" />
