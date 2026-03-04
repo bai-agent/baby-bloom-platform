@@ -512,7 +512,6 @@ async function completeAndRemindBSRs(parentId?: string): Promise<void> {
         // BSR-014: Reminder to nanny
         if (nannyUserId) {
           const nannyInfo = await getUserEmailInfo(nannyUserId);
-          const addressLine = bsr.address ? `${bsr.address}, ${bsr.suburb} ${bsr.postcode}` : `${bsr.suburb} ${bsr.postcode}`;
 
           if (nannyInfo) {
             sendEmail({
@@ -523,9 +522,9 @@ async function completeAndRemindBSRs(parentId?: string): Promise<void> {
                   <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
                   <p style="color: #374151; font-size: 16px; line-height: 1.6;">Hi ${nannyInfo.firstName},</p>
                   <p style="color: #374151; font-size: 16px; line-height: 1.6;">Just a friendly reminder that your babysitting job is coming up:</p>
-                  <p style="color: #374151; font-size: 16px; line-height: 1.6; background: white; border-radius: 8px; padding: 12px;">📅 ${slotDisplay}<br/>📍 ${addressLine}</p>
-                  ${bsr.special_requirements ? `<p style="color: #374151; font-size: 14px; line-height: 1.6;"><em>Parent notes: "${bsr.special_requirements}"</em></p>` : ''}
-                  <p style="margin-top: 16px;"><a href="${APP_URL}/nanny/babysitting" style="${BTN_STYLE}">View Job</a></p>
+                  <p style="color: #374151; font-size: 16px; line-height: 1.6; background: white; border-radius: 8px; padding: 12px;">📅 ${slotDisplay}<br/>📍 ${bsr.suburb}</p>
+                  <p style="color: #374151; font-size: 14px; line-height: 1.6; margin-top: 12px;">View the full address and job details in your Baby Bloom dashboard.</p>
+                  <p style="margin-top: 16px;"><a href="${APP_URL}/nanny/babysitting" style="${BTN_STYLE}">See Full Details</a></p>
                 </div>
               </div>`,
               emailType: 'bsr_reminder_nanny',
@@ -1067,12 +1066,11 @@ export async function parentAcceptNanny(
             <p style="color: #374151; font-size: 16px; line-height: 1.6;">Hi ${nannyEmailInfo.firstName},</p>
             <p style="color: #374151; font-size: 16px; line-height: 1.6;">Great news — the family has chosen you for their babysitting job!</p>
             ${slotsDisplay ? `<p style="color: #374151; margin: 4px 0;">${slotsDisplay}</p>` : ''}
-            <p style="color: #374151; margin: 4px 0;">📍 ${bsr.address ? `${bsr.address}, ` : ''}${bsr.suburb}</p>
+            <p style="color: #374151; margin: 4px 0;">📍 ${bsr.suburb}</p>
             ${childrenStr ? `<p style="color: #374151; margin: 4px 0;">👶 ${childrenStr}</p>` : ''}
-            ${bsr.special_requirements ? `<p style="color: #374151; margin: 4px 0;">📋 ${bsr.special_requirements}</p>` : ''}
             ${bsr.hourly_rate ? `<p style="color: #374151; margin: 4px 0;">💰 $${bsr.hourly_rate}/hr</p>` : ''}
-            <p style="color: #374151; font-size: 14px; line-height: 1.6; margin-top: 12px;">The parent will be in contact with you through Baby Bloom to confirm all the details.</p>
-            <p style="margin-top: 16px;"><a href="${APP_URL}/nanny/babysitting" style="${BTN_STYLE}">View Job</a></p>
+            <p style="color: #374151; font-size: 14px; line-height: 1.6; margin-top: 12px;">View the full details including the address in your Baby Bloom dashboard.</p>
+            <p style="margin-top: 16px;"><a href="${APP_URL}/nanny/babysitting" style="${BTN_STYLE}">See Full Details</a></p>
           </div>
         </div>`,
         emailType: 'bsr_accepted_nanny',
@@ -1113,10 +1111,10 @@ export async function parentAcceptNanny(
             <p style="color: #374151; font-size: 16px; line-height: 1.6;">Great news — your babysitter is confirmed!</p>
             ${nannyFirstName ? `<p style="color: #374151; margin: 4px 0; font-weight: 600;">👩 ${nannyFirstName}</p>` : ''}
             ${slotsDisplay ? `<p style="color: #374151; margin: 4px 0;">${slotsDisplay}</p>` : ''}
-            <p style="color: #374151; margin: 4px 0;">📍 ${bsr.address ? `${bsr.address}, ` : ''}${bsr.suburb}</p>
-            ${bsr.hourly_rate ? `<p style="color: #374151; margin: 4px 0;">💰 $${bsr.hourly_rate}/hr</p>` : ''}
-            <p style="color: #374151; font-size: 14px; line-height: 1.6; margin-top: 12px;">View the booking in your Baby Bloom dashboard to see your babysitter's contact details.</p>
-            <p style="margin-top: 16px;"><a href="${APP_URL}/parent/babysitting" style="${BTN_STYLE}">View Details</a></p>
+            <p style="color: #374151; margin: 4px 0;">📍 ${bsr.suburb}</p>
+            ${bsr.hourly_rate ? `<p style="color: #374141; margin: 4px 0;">💰 $${bsr.hourly_rate}/hr</p>` : ''}
+            <p style="color: #374151; font-size: 14px; line-height: 1.6; margin-top: 12px;">View the full booking details and your babysitter's contact information in your Baby Bloom dashboard.</p>
+            <p style="margin-top: 16px;"><a href="${APP_URL}/parent/babysitting" style="${BTN_STYLE}">See Full Details</a></p>
           </div>
         </div>`,
         emailType: 'bsr_confirmed_parent',
