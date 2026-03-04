@@ -181,6 +181,7 @@ export interface QuestionConfig {
     subLabel?: string;
     subPlaceholder?: string;
     subOptions?: SelectOption[];
+    subOptOut?: { value: string; label: string };
   };
   // Skip this question entirely
   skip?: (data: Partial<TypeformFormData>) => boolean;
@@ -200,30 +201,7 @@ export const QUESTIONS: QuestionConfig[] = [
     field: null,
   },
 
-  // 1 — Specific needs (Q4, separate question)
-  {
-    id: "child_needs",
-    type: "boolean",
-    question:
-      "Do any of your children have any developmental conditions which will require specific attention from your nanny?",
-    field: "child_needs_yn",
-    options: [
-      { value: "No", label: "No" },
-      { value: "Yes", label: "Yes" },
-      { value: "Rather Not Say", label: "Rather Not Say" },
-    ],
-    conditional: {
-      showWhen: (data) => data.child_needs_yn === "Yes",
-      subField: "child_needs_details",
-      subType: "textarea",
-      subLabel:
-        "Tell us about your child's developmental conditions so we can match you with the right experience",
-      subPlaceholder:
-        "e.g. autism spectrum, sensory sensitivities, speech delay, ADHD...",
-    },
-  },
-
-  // 3 — Minimum age (Q5)
+  // 1 — Minimum age (Q4)
   {
     id: "min_age",
     type: "single-select",
@@ -233,7 +211,7 @@ export const QUESTIONS: QuestionConfig[] = [
     columns: 2,
   },
 
-  // 4 — Experience (Q6)
+  // 2 — Experience (Q5)
   {
     id: "experience",
     type: "single-select",
@@ -241,6 +219,29 @@ export const QUESTIONS: QuestionConfig[] = [
     field: "years_of_experience",
     options: EXPERIENCE_OPTIONS,
     columns: 2,
+  },
+
+  // 3 — Developmental conditions experience (Q6)
+  {
+    id: "child_needs",
+    type: "boolean",
+    question:
+      "Should your nanny have experience working with children who have developmental conditions?",
+    field: "child_needs_yn",
+    options: [
+      { value: "No", label: "No" },
+      { value: "Yes", label: "Yes" },
+    ],
+    conditional: {
+      showWhen: (data) => data.child_needs_yn === "Yes",
+      subField: "child_needs_details",
+      subType: "textarea",
+      subLabel:
+        "What developmental conditions would you prefer your nanny to have experience with?",
+      subPlaceholder:
+        "e.g. autism spectrum, sensory sensitivities, speech delay, ADHD...",
+      subOptOut: { value: "Rather Not Say", label: "Rather not say" },
+    },
   },
 
   // 5 — Language (Q7)
