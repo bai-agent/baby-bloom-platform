@@ -19,7 +19,7 @@ interface PublicHeaderProps {
 }
 
 export function PublicHeader({ onMenuClick }: PublicHeaderProps) {
-  const { user, profile, role, isLoading, signOut } = useAuth();
+  const { user, profile, role, signOut } = useAuth();
 
   const fullName = profile
     ? `${profile.first_name || ""} ${profile.last_name || ""}`.trim()
@@ -50,9 +50,7 @@ export function PublicHeader({ onMenuClick }: PublicHeaderProps) {
 
       {/* Auth buttons or user menu */}
       <div className="flex items-center gap-2">
-        {isLoading ? (
-          <div className="h-8 w-8 rounded-full bg-slate-100 animate-pulse" />
-        ) : user ? (
+        {user ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" className="relative h-8 w-8 rounded-full">

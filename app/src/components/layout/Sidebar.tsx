@@ -17,6 +17,8 @@ import {
   Users,
   BarChart3,
   LogOut,
+  LogIn,
+  UserPlus,
   BookOpen,
   PlusCircle,
   HelpCircle,
@@ -25,6 +27,7 @@ import {
   Link2,
   Award,
 } from "lucide-react";
+import Link from "next/link";
 
 type UserRole = "nanny" | "parent" | "admin" | "super_admin" | "guest";
 
@@ -129,7 +132,34 @@ export function Sidebar({ role: propRole, collapsed, onToggle }: SidebarProps) {
         ))}
       </nav>
 
-      {/* Bottom Section — user info or nothing for guests */}
+      {/* Bottom Section — auth buttons for guests, user info for logged-in */}
+      {isGuest && (
+        <div className="border-t p-4">
+          {collapsed ? (
+            <div className="flex flex-col items-center gap-2">
+              <Link href="/login">
+                <Button variant="ghost" size="icon" className="h-8 w-8 text-slate-500 hover:text-violet-600">
+                  <LogIn className="h-4 w-4" />
+                </Button>
+              </Link>
+              <Link href="/signup">
+                <Button size="icon" className="h-8 w-8 bg-violet-500 hover:bg-violet-600">
+                  <UserPlus className="h-4 w-4" />
+                </Button>
+              </Link>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <Button variant="outline" asChild className="w-full">
+                <Link href="/login">Log in</Link>
+              </Button>
+              <Button asChild className="w-full bg-violet-500 hover:bg-violet-600">
+                <Link href="/signup">Sign Up</Link>
+              </Button>
+            </div>
+          )}
+        </div>
+      )}
       {!isGuest && (
         <div className="border-t p-4">
           {collapsed ? (

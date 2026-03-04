@@ -142,7 +142,17 @@ export function MobileNav({ role: propRole, open, onOpenChange }: MobileNavProps
           })}
         </nav>
 
-        {/* Bottom: user info if logged in, nothing for guests */}
+        {/* Bottom: auth buttons for guests, user info for logged-in */}
+        {isGuest && (
+          <div className="border-t p-4 flex flex-col gap-2">
+            <Button variant="outline" asChild className="w-full" onClick={() => onOpenChange(false)}>
+              <Link href="/login">Log in</Link>
+            </Button>
+            <Button asChild className="w-full bg-violet-500 hover:bg-violet-600" onClick={() => onOpenChange(false)}>
+              <Link href="/signup">Sign Up</Link>
+            </Button>
+          </div>
+        )}
         {!isGuest && (
           <div className="border-t p-4">
             <div className="flex items-center gap-3">
