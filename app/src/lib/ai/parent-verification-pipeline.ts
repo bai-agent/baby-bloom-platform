@@ -34,8 +34,8 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function setParentIdentityReview(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any,
   verificationId: string,
   issues: string[],
