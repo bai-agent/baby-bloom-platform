@@ -101,6 +101,9 @@ export async function signUp(formData: FormData): Promise<ActionResult> {
 
     if (profileError) {
       console.error('Profile insert error:', profileError);
+      // Clean up auth user and role on failure
+      await adminClient.from('user_roles').delete().eq('user_id', userId);
+      await adminClient.auth.admin.deleteUser(userId);
       return { error: 'Failed to create user profile. Please try again.' };
     }
 

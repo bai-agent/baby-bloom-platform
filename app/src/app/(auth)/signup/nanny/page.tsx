@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useForm } from "react-hook-form";
 import { createClient } from "@/lib/supabase/client";
@@ -34,7 +33,6 @@ const nannySignupSchema = z.object({
 type NannySignupFormData = z.infer<typeof nannySignupSchema>;
 
 export default function NannySignupPage() {
-  const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -72,7 +70,7 @@ export default function NannySignupPage() {
       setError(result.error);
       setIsLoading(false);
     } else if (result.redirectTo) {
-      router.push(result.redirectTo);
+      window.location.href = result.redirectTo;
     }
   }
 

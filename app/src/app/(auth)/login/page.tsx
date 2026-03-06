@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, Suspense } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useForm } from "react-hook-form";
 import { createClient } from "@/lib/supabase/client";
@@ -28,17 +28,19 @@ const loginSchema = z.object({
 type LoginFormData = z.infer<typeof loginSchema>;
 
 function LoginForm() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const redirectTo = searchParams.get("redirect");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Clear any stale session when user lands on auth page
+  // Clear any stale session when user lands on auth page directly
+  // Skip when redirected from another page (e.g. BSR public page)
   useEffect(() => {
-    const supabase = createClient();
-    supabase.auth.signOut();
-  }, []);
+    if (!redirectTo) {
+      const supabase = createClient();
+      supabase.auth.signOut();
+    }
+  }, [redirectTo]);
 
   const form = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
@@ -62,7 +64,10 @@ function LoginForm() {
       setError(result.error);
       setIsLoading(false);
     } else if (result.redirectTo) {
-      router.push(redirectTo || result.redirectTo);
+      const dest = redirectTo || result.redirectTo;
+      // Always use full page reload after login to ensure auth state
+      // (cookies, session, profile) is fully initialized in the target layout
+      window.location.href = dest;
     }
   }
 

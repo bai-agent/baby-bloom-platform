@@ -8,6 +8,7 @@ import { createInboxMessage, getNannyPhone } from './connection-helpers';
 import { sendEmail, sendBatchEmails } from '@/lib/email/resend';
 import { getUserEmailInfo } from '@/lib/email/helpers';
 import { haversineDistance } from '@/lib/matching/normalize';
+import { generateBsrPost } from '@/lib/viral-loop/generate-bsr-post';
 
 // ── Types ──
 
@@ -555,6 +556,94 @@ async function countNannyCancellations(nannyId: string): Promise<number> {
 }
 
 // ══════════════════════════════════════════════════════════════
+// PUBLIC BSR PROFILE (no auth required — for landing page)
+// ══════════════════════════════════════════════════════════════
+
+export interface PublicBsrProfile {
+  id: string;
+  suburb: string;
+  hourly_rate: number | null;
+  estimated_hours: number | null;
+  status: string;
+  special_requirements: string | null;
+  created_at: string;
+  expires_at: string | null;
+  parent_first_name: string;
+  parent_last_name: string | null;
+  parent_profile_pic: string | null;
+  time_slots: Array<{ slot_date: string; start_time: string; end_time: string }>;
+  children: Array<{ ageMonths: number; gender?: string }>;
+}
+
+export async function getPublicBsrProfile(bsrId: string): Promise<{
+  data: PublicBsrProfile | null;
+  error: string | null;
+}> {
+  const admin = createAdminClient();
+
+  const { data: bsr, error: bsrErr } = await admin
+    .from('babysitting_requests')
+    .select('id, parent_id, suburb, hourly_rate, estimated_hours, status, special_requirements, created_at, expires_at, children')
+    .eq('id', bsrId)
+    .maybeSingle();
+
+  if (bsrErr || !bsr) return { data: null, error: 'Babysitting request not found' };
+
+  // Get time slots
+  const { data: slots } = await admin
+    .from('bsr_time_slots')
+    .select('slot_date, start_time, end_time')
+    .eq('babysitting_request_id', bsrId)
+    .order('slot_date', { ascending: true });
+
+  // Get parent's first name + profile pic (via parents → user_profiles)
+  const { data: parent } = await admin
+    .from('parents')
+    .select('user_id')
+    .eq('id', bsr.parent_id)
+    .single();
+
+  let parentFirstName = 'A family';
+  let parentLastName: string | null = null;
+  let parentProfilePic: string | null = null;
+
+  if (parent) {
+    const { data: profile } = await admin
+      .from('user_profiles')
+      .select('first_name, last_name, profile_picture_url')
+      .eq('user_id', parent.user_id)
+      .maybeSingle();
+
+    if (profile) {
+      parentFirstName = profile.first_name ?? 'A family';
+      parentLastName = profile.last_name ?? null;
+      parentProfilePic = profile.profile_picture_url ?? null;
+    }
+  }
+
+  const children = (bsr.children as Array<{ ageMonths: number; gender?: string }>) ?? [];
+
+  return {
+    data: {
+      id: bsr.id,
+      suburb: bsr.suburb,
+      hourly_rate: bsr.hourly_rate ? Number(bsr.hourly_rate) : null,
+      estimated_hours: bsr.estimated_hours ? Number(bsr.estimated_hours) : null,
+      status: bsr.status,
+      special_requirements: bsr.special_requirements,
+      created_at: bsr.created_at,
+      expires_at: bsr.expires_at,
+      parent_first_name: parentFirstName,
+      parent_last_name: parentLastName,
+      parent_profile_pic: parentProfilePic,
+      time_slots: slots ?? [],
+      children,
+    },
+    error: null,
+  };
+}
+
+// ══════════════════════════════════════════════════════════════
 // 1. CREATE BABYSITTING REQUEST (Parent)
 // ══════════════════════════════════════════════════════════════
 
@@ -671,7 +760,7 @@ export async function createBabysittingRequest(data: {
       estimated_hours: estimatedHours,
       estimated_total: estimatedTotal,
       children: data.children.map(c => ({ ageMonths: c.ageMonths, gender: c.gender })),
-      status: 'open',
+      status: 'pending_payment',
       expires_at: expiresAt,
     })
     .select('id')
@@ -699,29 +788,111 @@ export async function createBabysittingRequest(data: {
     console.error('[BSR] Slots insert error:', slotsError);
   }
 
-  // Build children string for emails
-  const childrenStr = `${data.children.length} child${data.children.length > 1 ? 'ren' : ''}: ${data.children.map(c => ageMonthsToDisplay(c.ageMonths)).join(', ')}`;
+  // Generate share post content
+  const { data: parentProfile } = await adminClient
+    .from('parents')
+    .select('user_id')
+    .eq('id', parentId)
+    .single();
+  let parentFirstName = 'Parent';
+  if (parentProfile) {
+    const { data: up } = await adminClient
+      .from('user_profiles')
+      .select('first_name')
+      .eq('user_id', parentProfile.user_id)
+      .maybeSingle();
+    if (up?.first_name) parentFirstName = up.first_name;
+  }
+  const sharePost = generateBsrPost({
+    firstName: parentFirstName,
+    suburb: data.suburb,
+    timeSlots: (insertedSlots ?? []).map(s => ({
+      slot_date: s.slot_date,
+      start_time: s.start_time,
+      end_time: s.end_time,
+    })),
+    children: data.children,
+    hourlyRate: data.hourlyRate,
+  });
+  await adminClient
+    .from('babysitting_requests')
+    .update({
+      ai_content: {
+        share_post: sharePost,
+        generated_at: new Date().toISOString(),
+        generator: 'template_v1',
+      },
+    })
+    .eq('id', bsr.id);
+
+  revalidatePath('/parent/babysitting');
+  return { success: true, error: null, requestId: bsr.id };
+}
+
+// ══════════════════════════════════════════════════════════════
+// 1b. ACTIVATE BSR — Move from pending_payment → open + notify nannies
+// ══════════════════════════════════════════════════════════════
+
+export async function activateBsr(
+  bsrId: string
+): Promise<{ success: boolean; error: string | null }> {
+  const adminClient = createAdminClient();
+
+  const parentId = await getParentId();
+  if (!parentId) {
+    return { success: false, error: 'Not authenticated as parent' };
+  }
+
+  // Fetch BSR and verify ownership + status
+  const { data: bsr } = await adminClient
+    .from('babysitting_requests')
+    .select('id, parent_id, suburb, postcode, hourly_rate, estimated_total, special_requirements, children, status')
+    .eq('id', bsrId)
+    .single();
+
+  if (!bsr) {
+    return { success: false, error: 'Babysitting request not found' };
+  }
+  if (bsr.parent_id !== parentId) {
+    return { success: false, error: 'Not authorized' };
+  }
+  if (bsr.status !== 'pending_payment') {
+    // Already activated or in another state — not an error, just skip
+    return { success: true, error: null };
+  }
+
+  // Update status to open
+  await adminClient
+    .from('babysitting_requests')
+    .update({ status: 'open' })
+    .eq('id', bsrId);
+
+  // Fetch time slots for email content
+  const { data: slots } = await adminClient
+    .from('bsr_time_slots')
+    .select('slot_date, start_time, end_time')
+    .eq('babysitting_request_id', bsrId)
+    .order('slot_date');
+
+  const children = (bsr.children ?? []) as Array<{ ageMonths: number; gender?: string }>;
+  const childrenStr = `${children.length} child${children.length > 1 ? 'ren' : ''}: ${children.map(c => ageMonthsToDisplay(c.ageMonths)).join(', ')}`;
 
   // Find 20 closest nannies
-  const closestNannies = await findClosestNannies(
-    data.suburb,
-    data.postcode
-  );
+  const closestNannies = await findClosestNannies(bsr.suburb, bsr.postcode);
 
   if (closestNannies.length === 0) {
-    // Still created the BSR, but no nannies to notify
     await adminClient
       .from('babysitting_requests')
       .update({ nannies_notified_count: 0 })
-      .eq('id', bsr.id);
+      .eq('id', bsrId);
 
     revalidatePath('/parent/babysitting');
-    return { success: true, error: 'No verified nannies available in your area. Your request has been posted but no nannies were notified.', requestId: bsr.id };
+    return { success: true, error: null };
   }
 
   // Insert notification rows
   const notifRows = closestNannies.map(n => ({
-    babysitting_request_id: bsr.id,
+    babysitting_request_id: bsrId,
     nanny_id: n.nannyId,
     notification_method: 'email' as const,
     distance_km: n.distanceKm,
@@ -733,27 +904,28 @@ export async function createBabysittingRequest(data: {
   await adminClient
     .from('babysitting_requests')
     .update({ nannies_notified_count: closestNannies.length })
-    .eq('id', bsr.id);
+    .eq('id', bsrId);
 
-  const slotsStr = (insertedSlots ?? []).map(s => formatSlotDisplay(s)).join('<br>');
+  const slotsStr = (slots ?? []).map(s => formatSlotDisplay(s)).join('<br>');
+  const estimatedTotal = bsr.estimated_total ?? 0;
 
-  // BSR-001: Send batch emails to nannies (fire-and-forget)
+  // Send batch emails to nannies (fire-and-forget)
   const emailPromises = closestNannies.map(async (n) => {
     const info = await getUserEmailInfo(n.userId);
     if (!info) return null;
     return {
       to: info.email,
-      subject: `New babysitting job in ${data.suburb}`,
+      subject: `New babysitting job in ${bsr.suburb}`,
       html: `<div style="${BASE_STYLE}">
         <div style="background: #F5F3FF; border-radius: 12px; padding: 20px;">
           <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
           <p style="color: #374151; font-size: 16px; line-height: 1.6;">Hi ${info.firstName},</p>
-          <p style="color: #374151; font-size: 16px; line-height: 1.6;">A family in ${data.suburb} is looking for a babysitter!</p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.6;">A family in ${bsr.suburb} is looking for a babysitter!</p>
           <p style="color: #374151; margin: 4px 0;">${slotsStr}</p>
-          <p style="color: #374151; margin: 4px 0;">📍 ${data.suburb} (${n.distanceKm < 1 ? '<1' : n.distanceKm} km from you)</p>
+          <p style="color: #374151; margin: 4px 0;">📍 ${bsr.suburb} (${n.distanceKm < 1 ? '<1' : n.distanceKm} km from you)</p>
           <p style="color: #374151; margin: 4px 0;">👶 ${childrenStr}</p>
-          ${data.specialRequirements ? `<p style="color: #374151; margin: 4px 0;">📋 ${data.specialRequirements}</p>` : ''}
-          <p style="color: #374151; margin: 4px 0;">💰 $${data.hourlyRate}/hr (est. total $${estimatedTotal})</p>
+          ${bsr.special_requirements ? `<p style="color: #374151; margin: 4px 0;">📋 ${bsr.special_requirements}</p>` : ''}
+          <p style="color: #374151; margin: 4px 0;">💰 $${bsr.hourly_rate}/hr (est. total $${estimatedTotal})</p>
           <p style="color: #374151; font-size: 14px; line-height: 1.6; margin-top: 12px;">Request this job and the family will choose their preferred babysitter.</p>
           <p style="margin-top: 16px;"><a href="${APP_URL}/nanny/babysitting" style="${BTN_STYLE}">View Job</a></p>
         </div>
@@ -768,23 +940,23 @@ export async function createBabysittingRequest(data: {
     if (validEmails.length > 0) {
       await sendBatchEmails(validEmails);
     }
-  }).catch(err => console.error('[BSR] BSR-001 batch email error:', err));
+  }).catch(err => console.error('[BSR] Activate batch email error:', err));
 
   // Inbox messages for nannies (fire-and-forget)
   for (const n of closestNannies) {
     createInboxMessage({
       userId: n.userId,
       type: 'bsr_new_job',
-      title: `New babysitting job in ${data.suburb}`,
-      body: `A family needs a babysitter. ${n.distanceKm < 1 ? '<1' : n.distanceKm} km from you. $${data.hourlyRate}/hr. Request it now!`,
+      title: `New babysitting job in ${bsr.suburb}`,
+      body: `A family needs a babysitter. ${n.distanceKm < 1 ? '<1' : n.distanceKm} km from you. $${bsr.hourly_rate}/hr. Request it now!`,
       actionUrl: '/nanny/babysitting',
-      referenceId: bsr.id,
+      referenceId: bsrId,
       referenceType: 'babysitting_request',
     }).catch(err => console.error('[BSR] Inbox error:', err));
   }
 
   revalidatePath('/parent/babysitting');
-  return { success: true, error: null, requestId: bsr.id };
+  return { success: true, error: null };
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -929,6 +1101,197 @@ export async function requestBabysittingJob(
   revalidatePath('/nanny/babysitting');
   revalidatePath('/parent/babysitting');
   return { success: true, error: null };
+}
+
+// ══════════════════════════════════════════════════════════════
+// 2A. PUBLIC BSR APPLICATION (Nanny applies from public page)
+// ══════════════════════════════════════════════════════════════
+
+export type BsrPublicApplyResult =
+  | { status: 'applied' }
+  | { status: 'unauthenticated' }
+  | { status: 'not_nanny' }
+  | { status: 'not_eligible' }
+  | { status: 'already_applied' }
+  | { status: 'bsr_closed' }
+  | { status: 'clash'; error: string }
+  | { status: 'error'; error: string };
+
+export async function applyToBsrPublic(
+  bsrId: string,
+): Promise<BsrPublicApplyResult> {
+  const supabase = createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return { status: 'unauthenticated' };
+
+  const adminClient = createAdminClient();
+  const now = new Date().toISOString();
+
+  // Get nanny record
+  const { data: nanny } = await adminClient
+    .from('nannies')
+    .select('id, visible_in_bsr, bsr_banned_until')
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  if (!nanny) return { status: 'not_nanny' };
+  if (!nanny.visible_in_bsr) return { status: 'not_eligible' };
+
+  // Ban check
+  if (nanny.bsr_banned_until && new Date(nanny.bsr_banned_until) > new Date()) {
+    const banDate = new Date(nanny.bsr_banned_until).toLocaleDateString('en-AU', {
+      day: 'numeric', month: 'long', year: 'numeric',
+    });
+    return { status: 'error', error: `You are suspended from babysitting jobs until ${banDate}` };
+  }
+
+  // BSR must be open
+  const { data: bsr } = await adminClient
+    .from('babysitting_requests')
+    .select('id, parent_id, suburb, special_requirements, hourly_rate, status')
+    .eq('id', bsrId)
+    .eq('status', 'open')
+    .single();
+
+  if (!bsr) return { status: 'bsr_closed' };
+
+  // Check existing notification
+  const { data: existingNotif } = await adminClient
+    .from('bsr_notifications')
+    .select('id, requested_at, declined_at, accepted_at')
+    .eq('babysitting_request_id', bsrId)
+    .eq('nanny_id', nanny.id)
+    .maybeSingle();
+
+  if (existingNotif) {
+    if (existingNotif.requested_at || existingNotif.accepted_at) return { status: 'already_applied' };
+    if (existingNotif.declined_at) return { status: 'error', error: 'You previously declined this job' };
+  }
+
+  // Scheduling clash check
+  const { data: allSlots } = await adminClient
+    .from('bsr_time_slots')
+    .select('slot_date, start_time, end_time')
+    .eq('babysitting_request_id', bsrId);
+
+  if (allSlots) {
+    for (const slot of allSlots) {
+      const clashResult = await hasClash(nanny.id, slot.slot_date, slot.start_time, slot.end_time);
+      if (clashResult.clash) {
+        return {
+          status: 'clash',
+          error: `You have a scheduling clash on ${formatSlotDisplay(slot)} (existing job: ${clashResult.existingJob}). We require a 2-hour buffer between jobs.`,
+        };
+      }
+    }
+  }
+
+  // Compute distance
+  let distanceKm = 0;
+  const { data: nannyProfile } = await adminClient
+    .from('user_profiles')
+    .select('suburb')
+    .eq('user_id', user.id)
+    .maybeSingle();
+
+  if (nannyProfile?.suburb) {
+    const { data: nannyLoc } = await adminClient
+      .from('sydney_postcodes')
+      .select('latitude, longitude')
+      .eq('suburb', nannyProfile.suburb)
+      .maybeSingle();
+
+    const { data: bsrLoc } = await adminClient
+      .from('sydney_postcodes')
+      .select('latitude, longitude')
+      .eq('suburb', bsr.suburb)
+      .maybeSingle();
+
+    if (nannyLoc && bsrLoc) {
+      distanceKm = Math.floor(haversineDistance(
+        Number(nannyLoc.latitude), Number(nannyLoc.longitude),
+        Number(bsrLoc.latitude), Number(bsrLoc.longitude),
+      ));
+    }
+  }
+
+  // Create or update notification row
+  if (existingNotif) {
+    await adminClient
+      .from('bsr_notifications')
+      .update({ requested_at: now, viewed_at: now })
+      .eq('id', existingNotif.id);
+  } else {
+    const { error: insertErr } = await adminClient
+      .from('bsr_notifications')
+      .insert({
+        babysitting_request_id: bsrId,
+        nanny_id: nanny.id,
+        distance_km: distanceKm,
+        notified_at: now,
+        viewed_at: now,
+        requested_at: now,
+        notification_method: 'in_app',
+      });
+
+    if (insertErr) {
+      console.error('[BSR] Public apply insert error:', insertErr);
+      return { status: 'error', error: 'Failed to submit application. Please try again.' };
+    }
+  }
+
+  // BSR-010: Email parent — nanny wants their job
+  const nannyEmailInfo = await getUserEmailInfo(user.id);
+  const { data: parentData } = await adminClient
+    .from('parents')
+    .select('user_id')
+    .eq('id', bsr.parent_id)
+    .single();
+
+  if (parentData) {
+    const parentInfo = await getUserEmailInfo(parentData.user_id);
+
+    const { data: slots } = await adminClient
+      .from('bsr_time_slots')
+      .select('slot_date, start_time, end_time')
+      .eq('babysitting_request_id', bsrId)
+      .limit(1);
+
+    const slotDisplay = slots?.[0] ? formatSlotDisplay(slots[0]) : '';
+
+    if (parentInfo && nannyEmailInfo) {
+      sendEmail({
+        to: parentInfo.email,
+        subject: `${nannyEmailInfo.firstName} wants to babysit for you!`,
+        html: `<div style="${BASE_STYLE}">
+          <div style="background: #F5F3FF; border-radius: 12px; padding: 20px;">
+            <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
+            <p style="color: #374151; font-size: 16px; line-height: 1.6;">Hi ${parentInfo.firstName},</p>
+            <p style="color: #374151; font-size: 16px; line-height: 1.6;">${nannyEmailInfo.firstName} has requested your babysitting job!</p>
+            ${slotDisplay ? `<p style="color: #374151; margin: 4px 0;">${slotDisplay}</p>` : ''}
+            <p style="color: #374151; margin: 4px 0;">Review their profile and accept or wait for more requests.</p>
+            <p style="margin-top: 16px;"><a href="${APP_URL}/parent/babysitting" style="${BTN_STYLE}">Review Requests</a></p>
+          </div>
+        </div>`,
+        emailType: 'bsr_nanny_requested',
+        recipientUserId: parentData.user_id,
+      }).catch(err => console.error('[BSR] BSR-010 public apply email error:', err));
+    }
+
+    await createInboxMessage({
+      userId: parentData.user_id,
+      type: 'bsr_nanny_requested',
+      title: `${nannyEmailInfo?.firstName ?? 'A nanny'} requested your babysitting job`,
+      body: 'Review their profile and accept if they\'re a good fit.',
+      actionUrl: '/parent/babysitting',
+      referenceId: bsrId,
+      referenceType: 'babysitting_request',
+    });
+  }
+
+  revalidatePath('/nanny/babysitting');
+  revalidatePath('/parent/babysitting');
+  return { status: 'applied' };
 }
 
 // ══════════════════════════════════════════════════════════════

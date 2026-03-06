@@ -150,12 +150,14 @@ function RealSessionProvider({ children }: SessionProviderProps) {
   }, []);
 
   const handleSignOut = useCallback(async () => {
-    try {
-      await supabase.auth.signOut();
-    } catch {
-      // Ignore — we're leaving anyway
-    }
     clearUserData();
+    try {
+      // Clear server-side cookies first
+      await fetch('/api/auth/signout', { method: 'POST' });
+    } catch {
+      // Fallback: try client-side signout
+      try { await supabase.auth.signOut(); } catch { /* ignore */ }
+    }
     window.location.href = '/login';
   }, [supabase, clearUserData]);
 
