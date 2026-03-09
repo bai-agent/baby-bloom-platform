@@ -33,6 +33,20 @@ export async function getNannyPhone(nannyUserId: string): Promise<string | null>
 }
 
 /**
+ * Get a parent's phone number from user_profiles.mobile_number.
+ * Uses admin client since phone is sensitive data behind RLS.
+ */
+export async function getParentPhone(parentUserId: string): Promise<string | null> {
+  const supabase = createAdminClient();
+  const { data: profile } = await supabase
+    .from('user_profiles')
+    .select('mobile_number')
+    .eq('user_id', parentUserId)
+    .single();
+  return profile?.mobile_number ?? null;
+}
+
+/**
  * Get a position summary for display in nanny's inbox.
  * Returns position details + children ages.
  */

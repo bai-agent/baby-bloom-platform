@@ -786,6 +786,19 @@ async function _createPlacement(
 
   funnelLog('_createPlacement', requestId, 'other connections → Not Selected(36) + expired', { positionId });
 
+  // 5b. Expire all remaining DFY notifications for this position
+  const { error: dfyExpireErr } = await adminClient
+    .from('dfy_match_notifications')
+    .update({ status: 'expired', updated_at: now })
+    .eq('position_id', positionId)
+    .in('status', ['notified', 'viewed', 'interested', 'pending_wave']);
+
+  if (dfyExpireErr) {
+    console.warn(`[_createPlacement] Step 5b — failed to expire DFY notifications:`, dfyExpireErr.message);
+  } else {
+    funnelLog('_createPlacement', requestId, 'DFY notifications expired (position filled)', { positionId });
+  }
+
   // 6. Create nanny_placements record
   const { data: placement, error: placementErr } = await adminClient
     .from('nanny_placements')
@@ -2993,6 +3006,13 @@ export async function closePositionWithReason(
   if (posErr) {
     console.warn(`[closePositionWithReason] Failed to update position ${position.id}:`, posErr.message);
   }
+
+  // Expire all remaining DFY notifications for this position
+  await adminClient
+    .from('dfy_match_notifications')
+    .update({ status: 'expired', updated_at: now })
+    .eq('position_id', position.id)
+    .in('status', ['notified', 'viewed', 'interested', 'pending_wave']);
 
   funnelLog('close-position', position.id, `connections ended (${reason}), position closed`, { connectionsClosedCount: activeConns?.length || 0 });
 

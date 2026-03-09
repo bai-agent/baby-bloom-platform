@@ -22,6 +22,7 @@ import {
   ChevronRight,
   ChevronDown,
   ChevronUp,
+  ChevronLeft,
   Loader2,
   UserCheck,
   Users,
@@ -34,6 +35,7 @@ import {
   Check,
   DollarSign,
   Mail,
+  Sparkles,
 } from "lucide-react";
 import Link from "next/link";
 import { CONNECTION_STAGE, CONNECTION_STAGE_LABELS } from "@/lib/position/constants";
@@ -57,6 +59,12 @@ import {
 import type { UpcomingIntro } from "@/lib/actions/position-funnel";
 import { ConnectionDetailPopup } from "@/components/position/ConnectionDetailPopup";
 import { cancelConnectionRequest } from "@/lib/actions/connection";
+import { getDfyApplicants, approveDfyApplicant, declineDfyApplicant } from "@/lib/actions/matching";
+import type { DfyApplicant } from "@/lib/actions/matching";
+import { formatSydneyDate } from "@/lib/timezone";
+import { getScoreBadgeStyle, calcAge } from "@/components/match/match-helpers";
+import { MatchCard } from "@/components/MatchCard";
+import type { MatchResult } from "@/lib/matching/types";
 import type { TypeformFormData } from "../request/questions";
 
 interface ConfirmedNanny {
@@ -191,6 +199,52 @@ export function PositionPageClient({
   const [positionEditing, setPositionEditing] = useState(false);
   const [showPositionMenu, setShowPositionMenu] = useState(false);
   const [showContactPopup, setShowContactPopup] = useState(false);
+  const [dfyApplicants, setDfyApplicants] = useState<DfyApplicant[]>([]);
+  const [dfyLoading, setDfyLoading] = useState(false);
+  const [dfyLoaded, setDfyLoaded] = useState(false);
+  const [approvingId, setApprovingId] = useState<string | null>(null);
+  const [decliningId, setDecliningId] = useState<string | null>(null);
+  const [dfySectionOpen, setDfySectionOpen] = useState(true);
+  const [expandedNannyId, setExpandedNannyId] = useState<string | null>(null);
+
+  // Check if position has DFY activated
+  const hasDfy = position && (position as PositionWithChildren & { dfy_activated_at?: string | null }).dfy_activated_at;
+
+  // Load DFY applicants on mount when DFY is activated
+  const loadDfyApplicants = async () => {
+    if (!position || dfyLoading) return;
+    setDfyLoading(true);
+    const result = await getDfyApplicants(position.id);
+    if (result.data) {
+      setDfyApplicants(result.data);
+    }
+    setDfyLoading(false);
+    setDfyLoaded(true);
+  };
+
+  // Auto-load on first render if DFY is active
+  if (hasDfy && !dfyLoaded && !dfyLoading) {
+    loadDfyApplicants();
+  }
+
+  const handleApproveDfy = async (notificationId: string) => {
+    setApprovingId(notificationId);
+    const result = await approveDfyApplicant(notificationId);
+    setApprovingId(null);
+    if (result.success) {
+      setDfyApplicants(prev => prev.filter(a => a.notificationId !== notificationId));
+      router.refresh();
+    }
+  };
+
+  const handleDeclineDfy = async (notificationId: string) => {
+    setDecliningId(notificationId);
+    const result = await declineDfyApplicant(notificationId);
+    setDecliningId(null);
+    if (result.success) {
+      setDfyApplicants(prev => prev.filter(a => a.notificationId !== notificationId));
+    }
+  };
 
   const handleFillPosition = async (nannyId: string, startWeek?: string) => {
     if (!position) return;
@@ -668,6 +722,240 @@ export function PositionPageClient({
             </DialogContent>
           </Dialog>
         </>
+      )}
+
+      {/* DFY Applicants (only shown when DFY is activated and no placement) */}
+      {!placement && hasDfy && dfyLoaded && dfyApplicants.length > 0 && (
+        <Card>
+          <CardContent className="py-5">
+            {/* Collapsible header */}
+            <button
+              onClick={() => { setDfySectionOpen(prev => !prev); setExpandedNannyId(null); }}
+              className="w-full flex items-center justify-between"
+            >
+              <div className="flex items-center gap-2">
+                <Sparkles className="h-5 w-5 text-violet-600" />
+                <p className="text-sm font-semibold text-slate-900">
+                  Interested Nannies ({dfyApplicants.length})
+                </p>
+              </div>
+              {dfySectionOpen ? (
+                <ChevronUp className="w-4 h-4 text-slate-400" />
+              ) : (
+                <ChevronDown className="w-4 h-4 text-slate-400" />
+              )}
+            </button>
+
+            {dfySectionOpen && (
+              <div className="mt-3">
+                {/* Detail view — single nanny expanded */}
+                {expandedNannyId ? (() => {
+                  const applicant = dfyApplicants.find(a => a.notificationId === expandedNannyId);
+                  if (!applicant) return null;
+
+                  const isApproving = approvingId === applicant.notificationId;
+                  const isDeclining = decliningId === applicant.notificationId;
+                  const score = Math.round(50 + (applicant.matchScore / 100) * 50);
+
+                  const slotDisplay = applicant.selectedTimeSlot
+                    ? applicant.selectedTimeSlot.includes("T")
+                      ? formatSydneyDate(applicant.selectedTimeSlot)
+                      : (() => {
+                          const parts = applicant.selectedTimeSlot.split("_");
+                          const d = parts[0] ? new Date(parts[0] + "T00:00:00") : null;
+                          const bracketLabels: Record<string, string> = {
+                            morning: "Morning", midday: "Midday",
+                            afternoon: "Afternoon", evening: "Evening",
+                          };
+                          return d
+                            ? `${d.toLocaleDateString("en-AU", { weekday: "short", day: "numeric", month: "short", timeZone: "Australia/Sydney" })} — ${bracketLabels[parts[1]] ?? parts[1]}`
+                            : applicant.selectedTimeSlot;
+                        })()
+                    : null;
+
+                  // Convert DfyApplicant to MatchResult for MatchCard
+                  const matchForCard: MatchResult = {
+                    nannyId: applicant.nannyId,
+                    nanny: {
+                      id: applicant.nannyId,
+                      user_id: "",
+                      total_experience_years: applicant.nanny.experienceYears,
+                      nanny_experience_years: null,
+                      under_3_experience_years: null,
+                      newborn_experience_years: null,
+                      max_children: null,
+                      min_child_age_months: null,
+                      max_child_age_months: null,
+                      additional_needs_ok: null,
+                      drivers_license: null,
+                      has_car: null,
+                      vaccination_status: null,
+                      non_smoker: null,
+                      comfortable_with_pets: null,
+                      hourly_rate_min: applicant.nanny.hourlyRateMin,
+                      languages: null,
+                      role_types_preferred: null,
+                      level_of_support_offered: null,
+                      immediate_start_available: null,
+                      ai_content: applicant.nanny.aiHeadline ? { headline: applicant.nanny.aiHeadline } : null,
+                    },
+                    profile: {
+                      user_id: "",
+                      first_name: applicant.nanny.firstName,
+                      last_name: applicant.nanny.lastName || "N",
+                      suburb: applicant.nanny.suburb,
+                      postcode: null,
+                      date_of_birth: applicant.nanny.dateOfBirth,
+                      profile_picture_url: applicant.nanny.profilePicUrl,
+                    },
+                    qualityBase: 0,
+                    requirementMultiplier: 1,
+                    overQualifiedMultiplier: 1,
+                    rawScore: applicant.matchScore,
+                    finalScore: score,
+                    breakdown: {
+                      experience: applicant.breakdown?.experience ?? 0,
+                      schedule: applicant.breakdown?.schedule ?? 0,
+                      location: applicant.breakdown?.location ?? 0,
+                      roleFit: 0,
+                      qualifications: 0,
+                      supportFit: 0,
+                    },
+                    distanceKm: applicant.distanceKm,
+                    scheduleOverlapPercent: 0,
+                    highestQualification: null,
+                    certifications: [],
+                    nannySchedule: applicant.nanny.schedule ?? {},
+                    unmetRequirements: [],
+                    overQualifiedBonuses: [],
+                  };
+
+                  return (
+                    <div>
+                      <button
+                        onClick={() => setExpandedNannyId(null)}
+                        className="flex items-center gap-1 text-sm text-violet-600 hover:text-violet-700 font-medium mb-3"
+                      >
+                        <ChevronLeft className="w-4 h-4" />
+                        Back to list
+                      </button>
+
+                      <MatchCard
+                        match={matchForCard}
+                        actions={
+                          <>
+                            {slotDisplay && (() => {
+                              const isStale = applicant.selectedTimeSlot?.includes("T")
+                                ? new Date(applicant.selectedTimeSlot) <= new Date()
+                                : false;
+                              return (
+                                <div className="text-xs -mt-1 space-y-0.5">
+                                  <div className="flex items-center gap-1 text-violet-700">
+                                    <Clock className="w-3 h-3" />
+                                    Preferred time: {slotDisplay}
+                                  </div>
+                                  {isStale && (
+                                    <p className="text-amber-600">
+                                      (Time has passed &mdash; {applicant.nanny.firstName} will propose new times if approved)
+                                    </p>
+                                  )}
+                                </div>
+                              );
+                            })()}
+                            <div className="flex gap-2">
+                              <Button
+                                size="sm"
+                                onClick={() => handleApproveDfy(applicant.notificationId)}
+                                disabled={isApproving || isDeclining}
+                                className="flex-1 bg-violet-600 hover:bg-violet-700 text-xs"
+                              >
+                                {isApproving ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
+                                ) : (
+                                  <CheckCircle className="w-3.5 h-3.5 mr-1" />
+                                )}
+                                Approve
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleDeclineDfy(applicant.notificationId)}
+                                disabled={isApproving || isDeclining}
+                                className="flex-1 text-xs"
+                              >
+                                {isDeclining ? (
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" />
+                                ) : (
+                                  <XCircle className="w-3.5 h-3.5 mr-1" />
+                                )}
+                                Decline
+                              </Button>
+                            </div>
+                          </>
+                        }
+                      />
+                    </div>
+                  );
+                })() : (
+                  /* List view — compact rows */
+                  <div>
+                    <p className="text-xs text-slate-500 mb-3">
+                      These nannies matched with your position and expressed interest. Tap to view details.
+                    </p>
+                    <div className="space-y-1">
+                      {dfyApplicants.map((applicant) => {
+                        const score = Math.round(50 + (applicant.matchScore / 100) * 50);
+                        const nannyAge = calcAge(applicant.nanny.dateOfBirth);
+                        const initials = `${applicant.nanny.firstName[0]}${applicant.nanny.lastName[0]}`;
+
+                        return (
+                          <button
+                            key={applicant.notificationId}
+                            onClick={() => setExpandedNannyId(applicant.notificationId)}
+                            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-violet-50 transition-colors text-left"
+                          >
+                            {applicant.nanny.profilePicUrl ? (
+                              <img
+                                src={applicant.nanny.profilePicUrl}
+                                alt={applicant.nanny.firstName}
+                                className="w-10 h-10 rounded-full object-cover shrink-0"
+                              />
+                            ) : (
+                              <div className="w-10 h-10 rounded-full bg-violet-100 flex items-center justify-center shrink-0">
+                                <span className="text-sm font-semibold text-violet-500">{initials}</span>
+                              </div>
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-baseline gap-1.5">
+                                <span className="text-sm font-medium text-slate-900 truncate">
+                                  {applicant.nanny.firstName}
+                                </span>
+                                {nannyAge && (
+                                  <span className="text-xs text-slate-400">{nannyAge}</span>
+                                )}
+                              </div>
+                              {applicant.nanny.suburb && (
+                                <span className="text-xs text-slate-400 flex items-center gap-1">
+                                  <MapPin className="w-2.5 h-2.5" />
+                                  {applicant.nanny.suburb}
+                                  {applicant.distanceKm != null && ` (${applicant.distanceKm < 1 ? "<1" : applicant.distanceKm.toFixed(0)} km)`}
+                                </span>
+                              )}
+                            </div>
+                            <div className={`rounded-lg border px-2 py-0.5 font-semibold text-xs shrink-0 ${getScoreBadgeStyle(score)}`}>
+                              {score}%
+                            </div>
+                            <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
       )}
 
       {/* Nanny Connections (only shown when no active placement) */}

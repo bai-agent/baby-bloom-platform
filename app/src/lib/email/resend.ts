@@ -100,15 +100,91 @@ export async function sendBatchEmails(emails: BatchEmailItem[]): Promise<{
   sent: number;
   failed: number;
 }> {
-  const results = await Promise.allSettled(
-    emails.map(email => sendEmail({ ...email, to: email.to }))
-  );
+  if (emails.length === 0) return { sent: 0, failed: 0 };
 
+  // Use Resend Batch API — single request for up to 100 personalized emails
+  const BATCH_LIMIT = 100;
   let sent = 0;
   let failed = 0;
-  for (const r of results) {
-    if (r.status === 'fulfilled' && r.value.success) sent++;
-    else failed++;
+
+  for (let i = 0; i < emails.length; i += BATCH_LIMIT) {
+    const chunk = emails.slice(i, i + BATCH_LIMIT);
+
+    try {
+      const payload = chunk.map(email => ({
+        from: DEFAULT_FROM,
+        to: [email.to],
+        subject: email.subject,
+        html: email.html,
+        ...(email.text ? { text: email.text } : {}),
+      }));
+
+      const { data, error } = await resend.batch.send(payload);
+
+      if (error) {
+        console.error('[Email] Batch API error:', error);
+        failed += chunk.length;
+
+        // Log all as failed
+        await Promise.allSettled(
+          chunk.map(email =>
+            logEmail({
+              recipientUserId: email.recipientUserId,
+              recipientEmail: email.to,
+              emailType: email.emailType,
+              subject: email.subject,
+              bodyHtml: email.html,
+              bodyText: email.text,
+              status: 'failed',
+              errorMessage: error.message,
+            })
+          )
+        );
+        continue;
+      }
+
+      // Batch succeeded — log each email
+      const ids = data?.data ?? [];
+      sent += ids.length;
+      // If batch returned fewer IDs than sent, remaining are failures
+      if (ids.length < chunk.length) {
+        failed += chunk.length - ids.length;
+      }
+
+      await Promise.allSettled(
+        chunk.map((email, idx) =>
+          logEmail({
+            recipientUserId: email.recipientUserId,
+            recipientEmail: email.to,
+            emailType: email.emailType,
+            subject: email.subject,
+            bodyHtml: email.html,
+            bodyText: email.text,
+            status: idx < ids.length ? 'sent' : 'failed',
+            providerMessageId: ids[idx]?.id,
+          })
+        )
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown batch error';
+      console.error('[Email] Batch send exception:', message);
+      failed += chunk.length;
+
+      await Promise.allSettled(
+        chunk.map(email =>
+          logEmail({
+            recipientUserId: email.recipientUserId,
+            recipientEmail: email.to,
+            emailType: email.emailType,
+            subject: email.subject,
+            bodyHtml: email.html,
+            bodyText: email.text,
+            status: 'failed',
+            errorMessage: message,
+          })
+        )
+      );
+    }
   }
 
   console.log(`[Email] Batch: ${sent} sent, ${failed} failed out of ${emails.length}`);

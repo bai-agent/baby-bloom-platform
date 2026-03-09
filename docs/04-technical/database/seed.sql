@@ -1,3 +1,8 @@
+-- [DEPRECATED SYSTEM REFERENCE] This file references the old Tier 1-2-3 verification system
+-- (Signed Up → ID Verified → Facebook Share) which has been FULLY DEPRECATED.
+-- The current system uses numeric verification_level (0-4) and per-section status codes.
+-- See: OLD system/Tier1-2-3/README.md for full deprecation details.
+
 -- ============================================================================
 -- BABY BLOOM SYDNEY - SEED DATA
 -- ============================================================================

@@ -4,6 +4,55 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { HIDDEN_CONNECTION_STAGES } from "@/lib/position/constants";
 import { NannyProfileView } from "./NannyProfileView";
 import { notFound } from "next/navigation";
+import { Metadata } from "next";
+
+export async function generateMetadata({
+  params,
+}: {
+  params: { id: string };
+}): Promise<Metadata> {
+  const { data: nanny } = await getPublicNannyProfile(params.id);
+
+  if (!nanny) {
+    return { title: "Nanny Not Found | Baby Bloom Sydney" };
+  }
+
+  const firstName = nanny.first_name ?? "Nanny";
+  const title = `${firstName} now has availability to Nanny & Babysit | see availability now`;
+
+  // Use AI bio summary or fallback
+  const suburb = nanny.suburb ?? "Sydney";
+  const bioRaw = nanny.ai_content?.bio_summary ?? nanny.ai_content?.parent_pitch ?? "";
+  const description = bioRaw
+    .replace(/<[^>]*>/g, "") // strip HTML tags
+    .slice(0, 155)
+    .trim() || `Find a verified, trusted nanny in ${suburb} on Baby Bloom Sydney.`;
+
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL ?? "https://app-babybloom.vercel.app";
+  const ogImageUrl = `${siteUrl}/api/og/nanny/${params.id}`;
+  const pageUrl = `${siteUrl}/nannies/${params.id}`;
+
+  return {
+    title,
+    description,
+    openGraph: {
+      title,
+      description,
+      type: "profile",
+      url: pageUrl,
+      images: [{ url: ogImageUrl, width: 1200, height: 630 }],
+    },
+    other: {
+      "fb:app_id": "4009164676060901",
+    },
+    twitter: {
+      card: "summary_large_image",
+      title,
+      description,
+      images: [ogImageUrl],
+    },
+  };
+}
 
 export default async function NannyProfilePage({
   params,

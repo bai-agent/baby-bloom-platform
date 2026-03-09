@@ -110,3 +110,23 @@ export const OQ_MULTIPLIER_CAP = 1.25;
 // Display score range
 export const DISPLAY_MIN = 50;
 export const DISPLAY_MAX = 100;
+
+// DFY matchmaker tier configuration
+export const DFY_TIERS = {
+  standard: {
+    totalNannies: 20,
+    waves: 1,
+    maxRespondents: 5,
+    expiryDays: 3,
+    followUpReminders: false,
+  },
+  priority: {
+    totalNannies: 50,
+    waves: 3,
+    maxRespondents: 10,
+    expiryDays: 7,
+    followUpReminders: true,
+  },
+} as const;
+
+export type DfyTier = keyof typeof DFY_TIERS;

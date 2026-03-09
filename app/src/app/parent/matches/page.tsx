@@ -1,4 +1,4 @@
-import { getMatchesForPosition } from "@/lib/actions/matching";
+import { getMatchesForPosition, getDfyStatus } from "@/lib/actions/matching";
 import { getPosition } from "@/lib/actions/parent";
 import { MatchResultsClient } from "./MatchResultsClient";
 import { EmptyState } from "@/components/dashboard/EmptyState";
@@ -30,8 +30,13 @@ export default async function ParentMatchesPage() {
     );
   }
 
-  // Run matching
-  const { data, error } = await getMatchesForPosition();
+  // Run matching + fetch DFY status in parallel
+  const [matchResult, dfyStatus] = await Promise.all([
+    getMatchesForPosition(),
+    getDfyStatus(),
+  ]);
+
+  const { data, error } = matchResult;
 
   if (error || !data) {
     return (
@@ -78,7 +83,11 @@ export default async function ParentMatchesPage() {
         </p>
       </div>
 
-      <MatchResultsClient matches={data.matches} stats={data.stats} />
+      <MatchResultsClient
+        matches={data.matches}
+        stats={data.stats}
+        dfyStatus={dfyStatus}
+      />
     </div>
   );
 }

@@ -35,6 +35,7 @@ import {
   Globe,
   Phone,
   Pencil,
+  CreditCard,
 } from "lucide-react";
 
 // ── Time options (15-min intervals, 6am to 11:45pm) ──
@@ -373,9 +374,8 @@ export function ParentBabysittingClient({ requests, suburbs }: ParentBabysitting
       return;
     }
 
-    resetForm();
-    setView("list");
-    router.refresh();
+    // Redirect to payment page
+    window.location.href = `/parent/babysitting/${result.requestId}/payment`;
   };
 
   const ageLabel = (months: number) => AGE_OPTIONS.find((o) => o.months === months)?.label ?? `${months}m`;
@@ -388,6 +388,7 @@ export function ParentBabysittingClient({ requests, suburbs }: ParentBabysitting
   };
 
   // Group requests by status
+  const pendingPayment = requests.filter((r) => r.status === "pending_payment").sort(sortByNextSlot);
   const active = requests.filter((r) => r.status === "open").sort(sortByNextSlot);
   const filled = requests.filter((r) => r.status === "filled").sort(sortByNextSlot);
   const past = requests.filter((r) =>
@@ -786,7 +787,7 @@ export function ParentBabysittingClient({ requests, suburbs }: ParentBabysitting
                   {submitting ? (
                     <>
                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Sending to Nannies...
+                      Creating request...
                     </>
                   ) : (
                     <>
@@ -892,6 +893,53 @@ export function ParentBabysittingClient({ requests, suburbs }: ParentBabysitting
         </>
       ) : (
         <div className="space-y-8">
+          {/* Pending Payment */}
+          {pendingPayment.length > 0 && (
+            <section className="space-y-4">
+              <h2 className="flex items-center gap-2 text-lg font-semibold text-violet-700">
+                <CreditCard className="h-5 w-5" />
+                Pending Payment ({pendingPayment.length})
+              </h2>
+              <div className="grid gap-3">
+                {pendingPayment.map((req) => {
+                  const firstSlot = req.slots.length > 0
+                    ? req.slots.reduce((min, s) => s.slot_date < min.slot_date ? s : min, req.slots[0])
+                    : null;
+                  return (
+                    <div
+                      key={req.id}
+                      className="cursor-pointer rounded-xl border border-violet-200 bg-white p-4 shadow-sm hover:shadow-md transition-shadow"
+                      onClick={() => {
+                        window.location.href = `/parent/babysitting/${req.id}/payment`;
+                      }}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-violet-100">
+                            <CreditCard className="h-5 w-5 text-violet-600" />
+                          </div>
+                          <div>
+                            <p className="font-medium text-slate-800">
+                              {firstSlot ? formatSlotDate(firstSlot.slot_date) : "Babysitting Request"}
+                              {firstSlot && ` · ${formatTime(firstSlot.start_time)}`}
+                            </p>
+                            <p className="text-sm text-slate-500">{req.suburb}</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="inline-block rounded-full bg-violet-100 px-2.5 py-1 text-xs font-medium text-violet-700">
+                            Checkout
+                          </span>
+                          <ChevronRight className="h-4 w-4 text-slate-400" />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          )}
+
           {/* Active — awaiting nanny */}
           {active.length > 0 && (
             <section className="space-y-4">

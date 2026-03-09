@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import {
   MapPin, Clock, DollarSign, Calendar, Users, ChevronRight, Bell, Heart, Loader2, X, ClipboardList,
-  Baby, Phone, Mail, PawPrint, Pencil, Check, MoreVertical,
+  Baby, Phone, Mail, PawPrint, Pencil, Check, MoreVertical, Sparkles, CheckCircle, XCircle,
 } from "lucide-react";
 import { formatSydneyDate } from "@/lib/timezone";
 import { CONNECTION_STAGE, CONNECTION_STAGE_LABELS } from "@/lib/position/constants";
@@ -21,6 +21,9 @@ import { reportIntroOutcome, reportTrialOutcome, nannyConfirmPosition, nannyDism
 import type { UpcomingIntro } from "@/lib/actions/position-funnel";
 import { ConnectionDetailPopup } from "@/components/position/ConnectionDetailPopup";
 import { cancelConnectionRequest } from "@/lib/actions/connection";
+import { getDfyNotificationsForNanny, respondToDfyMatch, markDfyNotificationViewed } from "@/lib/actions/matching";
+import type { DfyNotification } from "@/lib/actions/matching";
+import { PositionAccordion } from "@/components/position/PositionAccordion";
 
 function formatStartWeekDisplay(dateStr: string): string {
   if (dateStr === "tbc") return "Start week to be confirmed";
@@ -107,6 +110,52 @@ export function NannyPositionsClient({ placements, upcomingIntros = [] }: NannyP
   const [savingNotes, setSavingNotes] = useState(false);
   const [showSpecificNeeds, setShowSpecificNeeds] = useState(false);
   const [rosterExpanded, setRosterExpanded] = useState(false);
+  const [dfyNotifications, setDfyNotifications] = useState<DfyNotification[]>([]);
+  const [dfyLoading, setDfyLoading] = useState(false);
+  const [dfyLoaded, setDfyLoaded] = useState(false);
+  const [dfyRespondingId, setDfyRespondingId] = useState<string | null>(null);
+  const [dfySelectedSlots, setDfySelectedSlots] = useState<Record<string, string>>({});
+  const [dfySuccess, setDfySuccess] = useState<string | null>(null);
+  const [dfyInterestedId, setDfyInterestedId] = useState<string | null>(null);
+  const [dfyError, setDfyError] = useState<string | null>(null);
+
+  // Load DFY notifications
+  if (!dfyLoaded && !dfyLoading) {
+    setDfyLoading(true);
+    getDfyNotificationsForNanny().then((result) => {
+      if (result.data) setDfyNotifications(result.data);
+      setDfyLoading(false);
+      setDfyLoaded(true);
+    });
+  }
+
+  const handleDfyRespond = async (notificationId: string) => {
+    const selectedSlot = dfySelectedSlots[notificationId];
+    if (!selectedSlot) return;
+    setDfyRespondingId(notificationId);
+    setDfyError(null);
+    const result = await respondToDfyMatch(notificationId, selectedSlot);
+    setDfyRespondingId(null);
+    if (result.success) {
+      setDfySuccess(notificationId);
+      // Keep card but update status to 'interested'
+      setDfyNotifications(prev => prev.map(n =>
+        n.id === notificationId
+          ? { ...n, status: 'interested', selectedTimeSlot: selectedSlot, respondedAt: new Date().toISOString() }
+          : n
+      ));
+      setDfyInterestedId(null);
+      setTimeout(() => setDfySuccess(null), 3000);
+    } else {
+      setDfyError(result.error);
+      // If expired, remove from local state
+      if (result.error?.includes('expired')) {
+        setDfyNotifications(prev => prev.filter(n => n.id !== notificationId));
+        setDfyInterestedId(null);
+      }
+      setTimeout(() => setDfyError(null), 5000);
+    }
+  };
 
   // Split intros into requests, active connections, and ended
   // Hide connections for positions that already have an active placement
@@ -214,9 +263,9 @@ export function NannyPositionsClient({ placements, upcomingIntros = [] }: NannyP
 
   return (
     <div className="space-y-8">
-      {/* Empty state */}
+      {/* Empty state — wait for DFY to load before deciding */}
       {active.length === 0 && introRequests.length === 0 && activeConnections.length === 0 &&
-       endedConnections.length === 0 && past.length === 0 && (
+       endedConnections.length === 0 && past.length === 0 && dfyLoaded && dfyNotifications.length === 0 && (
         <div className="text-center py-12">
           <p className="text-sm text-slate-500">
             No positions or connections yet. When families reach out, they&apos;ll appear here.
@@ -875,6 +924,218 @@ export function NannyPositionsClient({ placements, upcomingIntros = [] }: NannyP
             ))}
           </div>
         </section>
+      )}
+
+      {/* DFY Matched Families */}
+      {dfyNotifications.length > 0 && (
+        <section className="space-y-4">
+          <h2 className="flex items-center gap-2 text-lg font-semibold text-violet-700">
+            <Sparkles className="h-5 w-5" />
+            Matched Families ({dfyNotifications.length})
+          </h2>
+          <div className="grid gap-3">
+            {dfyNotifications.map((notification) => {
+              const score = Math.round(50 + (notification.matchScore / 100) * 50);
+              const bracketLabels: Record<string, string> = {
+                morning: "Morning (8-11am)",
+                midday: "Midday (11am-2pm)",
+                afternoon: "Afternoon (2-5pm)",
+                evening: "Evening (5-8pm)",
+              };
+              const selectedSlot = dfySelectedSlots[notification.id];
+              const isResponding = dfyRespondingId === notification.id;
+              const isLocallyInterested = dfyInterestedId === notification.id;
+              const isPending = notification.status === "interested";
+              const parentSurname = notification.parent.lastName;
+
+              // Format the selected time for confirmation
+              const selectedSlotLabel = selectedSlot
+                ? selectedSlot.includes("T")
+                  ? formatSydneyDate(selectedSlot)
+                  : (() => {
+                      const [date, bracket] = selectedSlot.split("_");
+                      const d = new Date(date + "T00:00:00");
+                      const dayName = d.toLocaleDateString("en-AU", { weekday: "short", timeZone: "Australia/Sydney" });
+                      const dateStr = d.toLocaleDateString("en-AU", { day: "numeric", month: "short", timeZone: "Australia/Sydney" });
+                      return `${dayName} ${dateStr} — ${bracketLabels[bracket] ?? bracket}`;
+                    })()
+                : null;
+
+              return (
+                <Card key={notification.id} className="border-violet-200 bg-violet-50/30">
+                  <CardContent className="py-4 space-y-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-center gap-3">
+                        {notification.parent.profilePicUrl ? (
+                          <img
+                            src={notification.parent.profilePicUrl}
+                            alt=""
+                            className="h-10 w-10 rounded-full object-cover"
+                          />
+                        ) : (
+                          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-violet-100">
+                            <span className="text-sm font-semibold text-violet-600">
+                              {notification.parent.firstName.charAt(0)}
+                            </span>
+                          </div>
+                        )}
+                        <div>
+                          <p className="text-sm font-medium text-slate-900">
+                            {notification.parent.firstName} {notification.parent.lastName}
+                          </p>
+                          <div className="flex items-center gap-2 text-xs text-slate-500">
+                            {notification.position.suburb && (
+                              <span className="flex items-center gap-1">
+                                <MapPin className="h-3 w-3" />
+                                {notification.position.suburb}
+                                {notification.distanceKm != null && ` (${notification.distanceKm.toFixed(1)}km)`}
+                              </span>
+                            )}
+                            {notification.position.hourlyRate && (
+                              <span className="flex items-center gap-1">
+                                <DollarSign className="h-3 w-3" />
+                                ${notification.position.hourlyRate}/hr
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                      <span className={`shrink-0 text-xs font-bold px-2 py-0.5 rounded-full ${
+                        score >= 90 ? "bg-green-100 text-green-700" :
+                        score >= 75 ? "bg-violet-100 text-violet-700" :
+                        "bg-amber-100 text-amber-700"
+                      }`}>
+                        {score}% match
+                      </span>
+                    </div>
+
+                    {/* Context message */}
+                    {!isPending && (
+                      <p className="text-xs text-slate-600">
+                        The {parentSurname} family would love to speak to you about working with their children.
+                      </p>
+                    )}
+
+                    {/* Full position details accordion */}
+                    <PositionAccordion position={notification.position} />
+
+                    {/* ── Pending state (already responded) ── */}
+                    {isPending && (
+                      <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                        {notification.selectedTimeSlot
+                          ? `Your intro ${notification.selectedTimeSlot.includes("T") ? formatSydneyDate(notification.selectedTimeSlot) : notification.selectedTimeSlot} is pending the family's approval. We will update you on their response.`
+                          : "Your interest is pending the family's approval. We will update you on their response."}
+                      </p>
+                    )}
+
+                    {/* ── Step 1: "I'm interested" button (before local interest) ── */}
+                    {!isPending && !isLocallyInterested && (
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          setDfyInterestedId(notification.id);
+                          // Mark as viewed
+                          if (notification.status === "notified") {
+                            markDfyNotificationViewed(notification.id);
+                          }
+                        }}
+                        className="bg-violet-600 hover:bg-violet-700 w-full"
+                      >
+                        <Heart className="w-3.5 h-3.5 mr-1.5" />
+                        I&apos;m interested
+                      </Button>
+                    )}
+
+                    {/* ── Step 2: Time picker (after local interest) ── */}
+                    {!isPending && isLocallyInterested && (
+                      <div className="space-y-3">
+                        <p className="text-xs font-medium text-slate-700">
+                          When would you like to speak with the {parentSurname} family?
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {notification.availableTimeSlots.map((slot) => {
+                            const isIso = slot.includes("T");
+                            const slotLabel = isIso
+                              ? formatSydneyDate(slot)
+                              : (() => {
+                                  const [date, bracket] = slot.split("_");
+                                  const d = new Date(date + "T00:00:00");
+                                  const dayName = d.toLocaleDateString("en-AU", { weekday: "short", timeZone: "Australia/Sydney" });
+                                  const dateStr = d.toLocaleDateString("en-AU", { day: "numeric", month: "short", timeZone: "Australia/Sydney" });
+                                  return `${dayName} ${dateStr} — ${bracketLabels[bracket] ?? bracket}`;
+                                })();
+                            const isSelected = selectedSlot === slot;
+                            return (
+                              <button
+                                key={slot}
+                                onClick={() => {
+                                  setDfySelectedSlots(prev => ({
+                                    ...prev,
+                                    [notification.id]: isSelected ? "" : slot,
+                                  }));
+                                }}
+                                className={`text-xs px-2.5 py-1.5 rounded-md border transition-colors ${
+                                  isSelected
+                                    ? "bg-violet-600 text-white border-violet-600"
+                                    : "bg-white text-slate-600 border-slate-200 hover:border-violet-300 hover:bg-violet-50"
+                                }`}
+                              >
+                                {slotLabel}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {/* Confirmation text */}
+                        {selectedSlot && selectedSlotLabel && (
+                          <p className="text-xs text-green-700 bg-green-50 rounded-md px-3 py-2">
+                            The {parentSurname} family will call you for your intro on {selectedSlotLabel}.
+                          </p>
+                        )}
+
+                        {/* Confirm button */}
+                        <Button
+                          size="sm"
+                          onClick={() => handleDfyRespond(notification.id)}
+                          disabled={!selectedSlot || isResponding}
+                          className="bg-violet-600 hover:bg-violet-700 w-full"
+                        >
+                          {isResponding ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />
+                              Confirming...
+                            </>
+                          ) : (
+                            <>
+                              <CheckCircle className="w-3.5 h-3.5 mr-1.5" />
+                              Confirm
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      {/* DFY success toast */}
+      {dfySuccess && (
+        <div className="fixed bottom-4 right-4 bg-green-600 text-white px-4 py-3 rounded-lg shadow-lg text-sm font-medium flex items-center gap-2 z-50 animate-in fade-in slide-in-from-bottom-4">
+          <CheckCircle className="w-4 h-4" />
+          You&apos;ve expressed interest! The family will review your application.
+        </div>
+      )}
+
+      {/* DFY error toast */}
+      {dfyError && (
+        <div className="fixed bottom-4 right-4 bg-red-600 text-white px-4 py-3 rounded-lg shadow-lg text-sm font-medium flex items-center gap-2 z-50 animate-in fade-in slide-in-from-bottom-4">
+          <XCircle className="w-4 h-4" />
+          {dfyError}
+        </div>
       )}
 
       {/* Active Connections */}

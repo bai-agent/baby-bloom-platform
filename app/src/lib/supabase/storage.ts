@@ -1,6 +1,6 @@
 import { createClient } from "@/lib/supabase/client";
 
-export type StorageBucket = "profile-pictures" | "verification-documents" | "parent-verifications";
+export type StorageBucket = "profile-pictures" | "verification-documents" | "parent-verifications" | "share-screenshots";
 
 interface UploadResult {
   url: string | null;
@@ -35,7 +35,7 @@ export async function uploadFile(
     return { url: null, error: error.message };
   }
 
-  if (bucket === "profile-pictures") {
+  if (bucket === "profile-pictures" || bucket === "share-screenshots") {
     const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
     return { url: data.publicUrl, error: null };
   }
@@ -88,7 +88,7 @@ export function uploadFileWithProgress(
 
     xhr.addEventListener("load", () => {
       if (xhr.status >= 200 && xhr.status < 300) {
-        if (bucket === "profile-pictures") {
+        if (bucket === "profile-pictures" || bucket === "share-screenshots") {
           const { data } = supabase.storage.from(bucket).getPublicUrl(filePath);
           resolve({ url: data.publicUrl, error: null });
         } else {

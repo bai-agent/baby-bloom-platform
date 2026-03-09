@@ -1,6 +1,5 @@
 import { Card, CardContent } from "@/components/ui/card";
-import { EmptyState } from "@/components/dashboard/EmptyState";
-import { Award, AlertCircle } from "lucide-react";
+import { AlertCircle } from "lucide-react";
 import { getNannyPlacements, getNannyUpcomingIntros } from "@/lib/actions/position-funnel";
 import { NannyPositionsClient } from "./NannyPositionsClient";
 
@@ -27,8 +26,6 @@ export default async function NannyPositionsPage() {
     );
   }
 
-  const hasContent = placements.length > 0 || upcomingIntros.length > 0;
-
   return (
     <div className="space-y-6">
       <div>
@@ -36,18 +33,10 @@ export default async function NannyPositionsPage() {
         <p className="mt-1 text-slate-500">Your nanny placements through Baby Bloom</p>
       </div>
 
-      {!hasContent ? (
-        <EmptyState
-          icon={Award}
-          title="No positions yet"
-          description="When you're hired through Baby Bloom, your positions will appear here."
-        />
-      ) : (
-        <NannyPositionsClient
-          placements={placements}
-          upcomingIntros={upcomingIntros}
-        />
-      )}
+      <NannyPositionsClient
+        placements={placements}
+        upcomingIntros={upcomingIntros}
+      />
     </div>
   );
 }
