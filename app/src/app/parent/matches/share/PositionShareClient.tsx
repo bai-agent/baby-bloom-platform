@@ -356,7 +356,7 @@ export function PositionShareClient({ initialData }: Props) {
       );
 
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
+      const timeout = setTimeout(() => controller.abort(), 25000);
 
       try {
         const checkRes = await fetch("/api/check-share-screenshot", {

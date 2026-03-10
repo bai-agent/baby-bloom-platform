@@ -347,7 +347,7 @@ export function NannyShareClient({ initialData }: Props) {
 
       // Race the AI check against a 15-second timeout
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000);
+      const timeout = setTimeout(() => controller.abort(), 25000);
 
       try {
         const checkRes = await fetch("/api/check-share-screenshot", {

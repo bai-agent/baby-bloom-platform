@@ -276,11 +276,12 @@ async function sendDfyNotifications(
   const result = await sendBatchEmails(emailItems);
 
   if (result.failed > 0) {
-    console.error(`[DFY] Email: ${result.sent} sent, ${result.failed} failed out of ${emailItems.length}`);
+    console.error(`[DFY] Email: ${result.sent} sent, ${result.failed} failed out of ${emailItems.length}`,
+      { nannyIds: matches.map(m => m.nannyId) });
   }
 
   // Create inbox messages
-  await Promise.allSettled(
+  const inboxResults = await Promise.allSettled(
     matches.map(m =>
       createInboxMessage({
         userId: m.nanny.user_id,
@@ -293,6 +294,12 @@ async function sendDfyNotifications(
       })
     )
   );
+
+  const inboxFailed = inboxResults.filter(r => r.status === 'rejected');
+  if (inboxFailed.length > 0) {
+    console.error(`[DFY] Inbox messages: ${inboxFailed.length}/${matches.length} failed`,
+      inboxFailed.map(r => (r as PromiseRejectedResult).reason?.message ?? 'unknown'));
+  }
 
   return result;
 }
@@ -671,6 +678,11 @@ export async function respondToDfyMatch(
   if (position.dfy_expires_at && new Date(position.dfy_expires_at) <= new Date()) {
     await expireDfyNotifications(notification.position_id);
     return { success: false, error: 'This opportunity has expired. The family\'s search window has closed.' };
+  }
+
+  // Check position is still open (not ended/closed)
+  if (position.stage >= POSITION_STAGE.ENDED) {
+    return { success: false, error: 'This position has been closed.' };
   }
 
   // Check no existing active connection between parent and nanny
@@ -1090,10 +1102,11 @@ export async function processDfyWaves(): Promise<{ processed: number }> {
       if (!waveRows || waveRows.length === 0) {
         // No rows for this wave — just mark as sent
         const updatedWaves = [...wavesSent, waveNum];
-        await adminClient
+        const { error: waveErr } = await adminClient
           .from('nanny_positions')
           .update({ dfy_wave_sent: updatedWaves, updated_at: nowIso })
           .eq('id', pos.id);
+        if (waveErr) console.error(`[DFY-Wave] Failed to update wave_sent for ${pos.id}:`, waveErr);
         wavesSent.push(waveNum);
         continue;
       }
@@ -1110,10 +1123,11 @@ export async function processDfyWaves(): Promise<{ processed: number }> {
       // If 0 rows updated, another process already handled this wave
       if (!updatedRows || updatedRows.length === 0) {
         const updatedWaves = [...wavesSent, waveNum];
-        await adminClient
+        const { error: waveErr } = await adminClient
           .from('nanny_positions')
           .update({ dfy_wave_sent: updatedWaves, updated_at: nowIso })
           .eq('id', pos.id);
+        if (waveErr) console.error(`[DFY-Wave] Failed to update wave_sent for ${pos.id}:`, waveErr);
         wavesSent.push(waveNum);
         continue;
       }
@@ -1271,10 +1285,11 @@ export async function processDfyWaves(): Promise<{ processed: number }> {
 
       // Update dfy_wave_sent
       const updatedWaves = [...wavesSent, waveNum];
-      await adminClient
+      const { error: waveErr } = await adminClient
         .from('nanny_positions')
         .update({ dfy_wave_sent: updatedWaves, updated_at: nowIso })
         .eq('id', pos.id);
+      if (waveErr) console.error(`[DFY-Wave] Failed to update wave_sent for ${pos.id}:`, waveErr);
       wavesSent.push(waveNum);
 
       processed++;
@@ -1510,6 +1525,7 @@ export async function activateDfyPosition(positionId: string, tier: DfyTier = 's
   }
 
   // Check DFY status — allow re-trigger after expiry OR when upgrading tier (standard → priority)
+  let isUpgrade = false;
   if (position.dfy_activated_at) {
     const { data: posData } = await adminClient
       .from('nanny_positions')
@@ -1517,20 +1533,10 @@ export async function activateDfyPosition(positionId: string, tier: DfyTier = 's
       .eq('id', positionId)
       .single();
 
-    const isUpgrade = posData?.dfy_tier === 'standard' && tier === 'priority';
+    isUpgrade = posData?.dfy_tier === 'standard' && tier === 'priority';
     if (posData?.dfy_expires_at && new Date(posData.dfy_expires_at) > new Date() && !isUpgrade) {
       console.log('[activateDfyPosition] DFY still active, skipping:', positionId);
       return;
-    }
-
-    // When upgrading, expire old standard notifications so priority starts fresh
-    if (isUpgrade) {
-      await adminClient
-        .from('dfy_match_notifications')
-        .update({ status: 'expired' })
-        .eq('position_id', positionId)
-        .in('status', ['notified', 'pending_wave']);
-      console.log('[activateDfyPosition] Upgrading from standard to priority, expired old notifications');
     }
   }
 
@@ -1546,13 +1552,11 @@ export async function activateDfyPosition(positionId: string, tier: DfyTier = 's
     .eq('position_id', positionId)
     .in('status', ['pending', 'accepted', 'confirmed']);
 
-  // Also exclude active (non-expired) previously notified nannies
-  // Expired notifications are not excluded — allows tier upgrades and re-triggers to match fresh
+  // Also exclude ALL previously notified nannies (any status) to avoid double-notifying
   const { data: previouslyNotified } = await adminClient
     .from('dfy_match_notifications')
     .select('nanny_id')
-    .eq('position_id', positionId)
-    .neq('status', 'expired');
+    .eq('position_id', positionId);
 
   const excludedNannyIds = new Set([
     ...(existingConnections ?? []).map(c => c.nanny_id),
@@ -1637,6 +1641,19 @@ export async function activateDfyPosition(positionId: string, tier: DfyTier = 's
     ];
   }
 
+  // Race guard: verify no notifications were just created by a concurrent call
+  if (!isUpgrade) {
+    const { count } = await adminClient
+      .from('dfy_match_notifications')
+      .select('id', { count: 'exact', head: true })
+      .eq('position_id', positionId)
+      .neq('status', 'expired');
+    if ((count ?? 0) > 0) {
+      console.log('[activateDfyPosition] Notifications already exist, skipping duplicate insert');
+      return;
+    }
+  }
+
   const { error: insertError } = await adminClient
     .from('dfy_match_notifications')
     .insert(allNotificationRows);
@@ -1681,10 +1698,14 @@ export async function activateDfyPosition(positionId: string, tier: DfyTier = 's
   const parentSuburb = positionDetails?.suburb || '';
 
   // Get children for email context
-  const { data: children } = await adminClient
+  const { data: children, error: childrenErr } = await adminClient
     .from('position_children')
     .select('age_months')
     .eq('position_id', positionId);
+
+  if (childrenErr) {
+    console.error('[activateDfyPosition] Failed to fetch children:', childrenErr);
+  }
 
   const emailContext: DfyEmailContext = {
     parentName,
