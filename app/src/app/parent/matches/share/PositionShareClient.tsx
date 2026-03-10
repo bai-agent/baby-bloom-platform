@@ -817,6 +817,11 @@ export function PositionShareClient({ initialData }: Props) {
                 <p className="text-sm text-green-600 mt-1">
                   We&apos;ll reach out to our private network of nannies and let you know when they respond.
                 </p>
+                <a href="/parent/matches">
+                  <Button className="mt-3 w-full bg-violet-600 hover:bg-violet-700 text-white">
+                    Go to My Childcare
+                  </Button>
+                </a>
               </div>
             ) : (
               <span className="text-base font-semibold text-slate-300">

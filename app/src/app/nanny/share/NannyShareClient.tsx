@@ -813,6 +813,11 @@ export function NannyShareClient({ initialData }: Props) {
                 <p className="text-sm text-green-600 mt-1">
                   You will now receive an email from us whenever a new babysitting opportunity pops up near you.
                 </p>
+                <a href="/nanny">
+                  <Button className="mt-3 w-full bg-violet-600 hover:bg-violet-700 text-white">
+                    Go to Dashboard
+                  </Button>
+                </a>
               </div>
             ) : (
               <span className="text-base font-semibold text-slate-300">

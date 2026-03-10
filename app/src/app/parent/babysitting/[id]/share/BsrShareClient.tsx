@@ -816,6 +816,11 @@ export function BsrShareClient({ initialData }: Props) {
                 <p className="text-sm text-green-600 mt-1">
                   We will notify you the first 5 responders so you can confirm your babysitter personally.
                 </p>
+                <a href={`/parent/babysitting/${initialData.bsrId}`}>
+                  <Button className="mt-3 w-full bg-violet-600 hover:bg-violet-700 text-white">
+                    Go to My Babysitting Request
+                  </Button>
+                </a>
               </div>
             ) : (
               <span className="text-base font-semibold text-slate-300">
