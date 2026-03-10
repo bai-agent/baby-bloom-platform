@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { MatchCard } from "@/components/MatchCard";
 import type { MatchResult } from "@/lib/matching/types";
-import { Users, MapPin, Briefcase, Sparkles, CheckCircle, Clock } from "lucide-react";
+import { Users, MapPin, Briefcase, Sparkles, CheckCircle, Clock, PartyPopper } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 
@@ -76,14 +76,19 @@ export function MatchResultsClient({
   const isExpired = dfyTriggered && (dfyStatus?.expired ?? false);
   const isActive = dfyTriggered && !isExpired;
 
-  const expiryDisplay = dfyStatus?.expiresAt
-    ? new Date(dfyStatus.expiresAt).toLocaleDateString("en-AU", {
-        weekday: "short",
-        day: "numeric",
-        month: "short",
-        timeZone: "Australia/Sydney",
-      })
-    : null;
+  // Calculate time remaining for active DFY
+  const timeRemaining = (() => {
+    if (!dfyStatus?.expiresAt) return null;
+    const now = Date.now();
+    const expires = new Date(dfyStatus.expiresAt).getTime();
+    const diff = expires - now;
+    if (diff <= 0) return null;
+    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    if (days > 0) return `${days}d ${hours}h remaining`;
+    if (hours > 0) return `${hours}h remaining`;
+    return 'Less than 1h remaining';
+  })();
 
   return (
     <>
@@ -108,24 +113,57 @@ export function MatchResultsClient({
           </Link>
         </div>
       ) : isActive ? (
-        /* State 2: Active */
-        <div className="bg-green-50 border border-green-200 rounded-xl p-4 sm:p-5 flex items-center gap-3">
-          <CheckCircle className="w-5 h-5 text-green-600 shrink-0" />
-          <div>
-            <p className="text-sm font-medium text-green-800">
-              {dfyStatus?.tier === 'priority'
-                ? "Your position is live \u2014 we're reaching out to your best matched nannies in 3 waves!"
-                : "We've contacted your top matched nannies!"}
+        /* State 2: Active — celebration banner */
+        <div className="relative overflow-hidden bg-gradient-to-br from-green-50 via-emerald-50 to-teal-50 border border-green-200 rounded-xl p-5 sm:p-6">
+          {/* Subtle sparkle background */}
+          <div className="absolute top-2 right-3 text-green-200 opacity-50"><Sparkles className="w-8 h-8" /></div>
+          <div className="absolute bottom-2 left-4 text-emerald-200 opacity-30"><Sparkles className="w-5 h-5" /></div>
+
+          <div className="relative flex flex-col gap-3">
+            {/* Header row with tier badge + countdown */}
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <PartyPopper className="w-5 h-5 text-green-600" />
+                {dfyStatus?.tier === 'priority' ? (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wide bg-gradient-to-r from-violet-600 to-purple-600 text-white shadow-sm">
+                    <Sparkles className="w-3 h-3" />
+                    Priority Matchmaking
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-800">
+                    <CheckCircle className="w-3 h-3" />
+                    Matchmaking Active
+                  </span>
+                )}
+              </div>
+              {timeRemaining && (
+                <span className="inline-flex items-center gap-1 text-xs font-medium text-green-700 bg-green-100/80 px-2.5 py-1 rounded-full">
+                  <Clock className="w-3 h-3" />
+                  {timeRemaining}
+                </span>
+              )}
+            </div>
+
+            {/* Main message */}
+            <p className="text-base font-semibold text-green-900">
+              We are reaching out to the nannies that best match your position!
             </p>
-            <p className="text-xs text-green-700 mt-0.5">
-              {expiryDisplay && <>Active until {expiryDisplay}</>}
-              {dfyStatus?.interestedCount
-                ? <> &mdash; {dfyStatus.interestedCount} nann{dfyStatus.interestedCount !== 1 ? "ies" : "y"} interested</>
-                : <> &mdash; Waiting for responses</>}
-              {dfyStatus?.interestedCount ? (
-                <> &mdash; <a href="/parent/position" className="underline font-medium">view interested nannies</a></>
-              ) : null}
+            <p className="text-sm text-green-700">
+              You will be notified as they start to respond.
             </p>
+
+            {/* Interested count */}
+            {dfyStatus?.interestedCount ? (
+              <div className="flex items-center gap-2 mt-1">
+                <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-green-800">
+                  <Users className="w-4 h-4" />
+                  {dfyStatus.interestedCount} nann{dfyStatus.interestedCount !== 1 ? "ies" : "y"} interested
+                </span>
+                <a href="/parent/position" className="text-sm text-violet-600 hover:text-violet-700 underline font-medium">
+                  View responses
+                </a>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : (
