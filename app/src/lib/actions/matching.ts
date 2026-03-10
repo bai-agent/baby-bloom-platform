@@ -7,10 +7,10 @@ import { getParentId, getPosition } from './parent';
 import { runMatchmaking, runBasicMatchmaking } from '@/lib/matching/engine';
 import { normalizeNannySchedule } from '@/lib/matching/normalize';
 import { DFY_TIERS, type DfyTier } from '@/lib/matching/constants';
-import { createInboxMessage, getNannyPhone, getParentPhone, logConnectionEvent } from './connection-helpers';
+import { createInboxMessage, logConnectionEvent } from './connection-helpers';
 import { sendEmail, sendBatchEmails } from '@/lib/email/resend';
 import { getUserEmailInfo } from '@/lib/email/helpers';
-import { sydneyToUTC, BRACKET_KEYS, TIME_BRACKETS, formatSydneyDate } from '@/lib/timezone';
+import { BRACKET_KEYS, formatSydneyDate } from '@/lib/timezone';
 import type { BracketKey } from '@/lib/timezone';
 import { CONNECTION_STAGE, POSITION_STAGE, POSITION_STATUS } from '@/lib/position/constants';
 import { funnelLog } from '@/lib/position/logger';
@@ -35,18 +35,22 @@ export interface MatchesResponse {
   error: string | null;
 }
 
-export interface DfyApplicant {
+export interface DfyConnection {
+  connectionId: string;
   notificationId: string;
   nannyId: string;
+  connectionStage: number;
+  proposedTimes: string[] | null;
+  confirmedTime: string | null;
   matchScore: number;
   distanceKm: number | null;
-  selectedTimeSlot: string;
-  respondedAt: string;
   breakdown: {
     experience: number;
     schedule: number;
     location: number;
   } | null;
+  overQualifiedBonuses: string[];
+  unmetRequirements: string[];
   nanny: {
     firstName: string;
     lastName: string;
@@ -66,17 +70,18 @@ export interface DfyNotification {
   positionId: string;
   matchScore: number;
   distanceKm: number | null;
+  dfyTier: 'standard' | 'priority';
   status: string;
   notifiedAt: string;
   viewedAt: string | null;
   respondedAt: string | null;
-  selectedTimeSlot: string | null;
   position: {
     suburb: string | null;
     scheduleType: string | null;
     hourlyRate: number | null;
     hoursPerWeek: number | null;
     daysRequired: string[] | null;
+    schedule: Record<string, string[]> | null;
     levelOfSupport: string[] | null;
     urgency: string | null;
     startDate: string | null;
@@ -99,7 +104,6 @@ export interface DfyNotification {
     lastName: string;
     profilePicUrl: string | null;
   };
-  availableTimeSlots: string[];
 }
 
 // ── Helper: get nanny ID for current user ──
@@ -118,33 +122,6 @@ async function getNannyId(): Promise<{ nannyId: string; userId: string } | null>
 
   if (error || !nanny) return null;
   return { nannyId: nanny.id, userId: user.id };
-}
-
-// ── Helper: convert time slot to confirmed_time ──
-
-function slotToConfirmedTime(slot: string): string {
-  // ISO format: already a UTC string
-  if (slot.includes('T')) return slot;
-  // Legacy bracket format: "YYYY-MM-DD_bracket"
-  const [date, bracket] = slot.split('_');
-  const bracketDef = TIME_BRACKETS[bracket as BracketKey];
-  if (!bracketDef) throw new Error(`Invalid bracket: ${bracket}`);
-  return sydneyToUTC(date, bracketDef.startHour, 0);
-}
-
-// ── Helper: format time slot for display ──
-
-function formatSlotForDisplay(slot: string): string {
-  // ISO format: use formatSydneyDate
-  if (slot.includes('T')) return formatSydneyDate(slot);
-  // Legacy bracket format
-  const [date, bracket] = slot.split('_');
-  const bracketDef = TIME_BRACKETS[bracket as BracketKey];
-  if (!bracketDef) return slot;
-  const d = new Date(date + 'T00:00:00');
-  const dayName = d.toLocaleDateString('en-AU', { weekday: 'short', timeZone: 'Australia/Sydney' });
-  const dateStr = d.toLocaleDateString('en-AU', { day: 'numeric', month: 'short', timeZone: 'Australia/Sydney' });
-  return `${dayName} ${dateStr} — ${bracketDef.label} (${bracketDef.sublabel})`;
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -324,9 +301,7 @@ async function sendDfyNotifications(
 // 2. TRIGGER DFY MATCHMAKING (Parent) — Wave 1 + pre-create wave 2/3
 // ════════════════════════════════════════════════════════════════════════════
 
-export async function triggerDfyMatchmaking(
-  timeSlots: string[]
-): Promise<{ success: boolean; error: string | null; notifiedCount?: number }> {
+export async function triggerDfyMatchmaking(): Promise<{ success: boolean; error: string | null; notifiedCount?: number }> {
   const adminClient = createAdminClient();
 
   const parentId = await getParentId();
@@ -354,18 +329,6 @@ export async function triggerDfyMatchmaking(
     }
     // Expired — run lazy cleanup before re-triggering
     await expireDfyNotifications(position.id, parentId);
-  }
-
-  // Validate time slots (ISO UTC strings)
-  if (!timeSlots || timeSlots.length < 3) {
-    return { success: false, error: 'Please select at least 3 preferred time slots.' };
-  }
-
-  for (const slot of timeSlots) {
-    const d = new Date(slot);
-    if (isNaN(d.getTime())) {
-      return { success: false, error: 'Invalid time slot format.' };
-    }
   }
 
   // Run matching algorithm
@@ -419,6 +382,8 @@ export async function triggerDfyMatchmaking(
       metadata: {
         breakdown: m.breakdown ?? null,
         headline: m.nanny.ai_content?.headline ?? null,
+        overQualifiedBonuses: m.overQualifiedBonuses,
+        unmetRequirements: m.unmetRequirements,
       },
     })),
     ...wave2.map(m => ({
@@ -433,6 +398,8 @@ export async function triggerDfyMatchmaking(
       metadata: {
         breakdown: m.breakdown ?? null,
         headline: m.nanny.ai_content?.headline ?? null,
+        overQualifiedBonuses: m.overQualifiedBonuses,
+        unmetRequirements: m.unmetRequirements,
       },
     })),
     ...wave3.map(m => ({
@@ -447,6 +414,8 @@ export async function triggerDfyMatchmaking(
       metadata: {
         breakdown: m.breakdown ?? null,
         headline: m.nanny.ai_content?.headline ?? null,
+        overQualifiedBonuses: m.overQualifiedBonuses,
+        unmetRequirements: m.unmetRequirements,
       },
     })),
   ];
@@ -468,7 +437,6 @@ export async function triggerDfyMatchmaking(
     .update({
       dfy_activated_at: now,
       dfy_expires_at: expiresAt,
-      dfy_time_slots: timeSlots,
       dfy_wave_sent: wavesSent,
       updated_at: now,
     })
@@ -518,7 +486,7 @@ export async function getDfyNotificationsForNanny(): Promise<{
   // Get active notifications
   const { data: notifications, error } = await adminClient
     .from('dfy_match_notifications')
-    .select('id, position_id, match_score, distance_km, status, notified_at, viewed_at, responded_at, selected_time_slot')
+    .select('id, position_id, match_score, distance_km, status, notified_at, viewed_at, responded_at')
     .eq('nanny_id', nannyInfo.nannyId)
     .in('status', ['notified', 'viewed', 'interested'])
     .order('match_score', { ascending: false });
@@ -537,7 +505,7 @@ export async function getDfyNotificationsForNanny(): Promise<{
 
   const { data: positions } = await adminClient
     .from('nanny_positions')
-    .select('id, parent_id, suburb, schedule_type, hourly_rate, hours_per_week, days_required, level_of_support, urgency, start_date, placement_length, reason_for_nanny, language_preference, qualification_requirement, certificate_requirements, vaccination_required, drivers_license_required, car_required, comfortable_with_pets_required, non_smoker_required, other_requirements_details, description, dfy_time_slots')
+    .select('id, parent_id, suburb, schedule_type, hourly_rate, hours_per_week, days_required, level_of_support, urgency, start_date, placement_length, reason_for_nanny, language_preference, qualification_requirement, certificate_requirements, vaccination_required, drivers_license_required, car_required, comfortable_with_pets_required, non_smoker_required, other_requirements_details, description, dfy_tier')
     .in('id', positionIds);
 
   const { data: children } = await adminClient
@@ -570,6 +538,16 @@ export async function getDfyNotificationsForNanny(): Promise<{
   const parentMap = new Map((parents ?? []).map(p => [p.id, p]));
   const parentProfileMap = new Map((parentProfiles ?? []).map(p => [p.user_id, p]));
 
+  // Fetch position schedules (time brackets)
+  const { data: scheduleRows } = await adminClient
+    .from('position_schedule')
+    .select('position_id, schedule')
+    .in('position_id', positionIds);
+
+  const scheduleByPosition = new Map<string, Record<string, string[]>>(
+    (scheduleRows ?? []).map(s => [s.position_id, s.schedule as Record<string, string[]>])
+  );
+
   const result: DfyNotification[] = notifications.map(n => {
     const pos = positionMap.get(n.position_id);
     const parent = pos ? parentMap.get(pos.parent_id) : null;
@@ -580,17 +558,18 @@ export async function getDfyNotificationsForNanny(): Promise<{
       positionId: n.position_id,
       matchScore: n.match_score,
       distanceKm: n.distance_km,
+      dfyTier: (pos?.dfy_tier as 'standard' | 'priority') || 'standard',
       status: n.status,
       notifiedAt: n.notified_at,
       viewedAt: n.viewed_at,
       respondedAt: n.responded_at,
-      selectedTimeSlot: n.selected_time_slot,
       position: {
         suburb: pos?.suburb ?? null,
         scheduleType: pos?.schedule_type ?? null,
         hourlyRate: pos?.hourly_rate ?? null,
         hoursPerWeek: pos?.hours_per_week ?? null,
         daysRequired: pos?.days_required ?? null,
+        schedule: scheduleByPosition.get(n.position_id) ?? null,
         levelOfSupport: pos?.level_of_support ?? null,
         urgency: pos?.urgency ?? null,
         startDate: pos?.start_date ?? null,
@@ -613,7 +592,6 @@ export async function getDfyNotificationsForNanny(): Promise<{
         lastName: parentProfile?.last_name ?? '',
         profilePicUrl: parentProfile?.profile_picture_url ?? null,
       },
-      availableTimeSlots: pos?.dfy_time_slots ?? [],
     };
   });
 
@@ -626,13 +604,40 @@ export async function getDfyNotificationsForNanny(): Promise<{
 
 export async function respondToDfyMatch(
   notificationId: string,
-  selectedSlot: string
-): Promise<{ success: boolean; error: string | null }> {
+  availableSlots: string[]
+): Promise<{ success: boolean; error: string | null; connectionId?: string }> {
   const adminClient = createAdminClient();
 
   const nannyInfo = await getNannyId();
   if (!nannyInfo) {
     return { success: false, error: 'Not authenticated as nanny' };
+  }
+
+  // Validate availability slots — same rules as acceptConnectionRequest
+  if (!availableSlots || availableSlots.length < 5) {
+    return { success: false, error: 'Please select at least 5 available time slots.' };
+  }
+
+  const validBrackets = new Set(BRACKET_KEYS);
+  const selectedBrackets = new Set<string>();
+  const selectedDays = new Set<string>();
+
+  for (const slot of availableSlots) {
+    const parts = slot.split('_');
+    if (parts.length !== 2) return { success: false, error: `Invalid slot format: ${slot}` };
+    const [date, bracket] = parts;
+    if (!validBrackets.has(bracket as BracketKey)) return { success: false, error: `Invalid bracket: ${bracket}` };
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { success: false, error: `Invalid date format: ${date}` };
+    selectedBrackets.add(bracket);
+    selectedDays.add(date);
+  }
+
+  if (selectedBrackets.size < 4) {
+    return { success: false, error: 'Please select at least one slot from each time bracket (Morning, Midday, Afternoon, Evening).' };
+  }
+
+  if (selectedDays.size < 3) {
+    return { success: false, error: 'Please select slots across at least 3 different days.' };
   }
 
   // Fetch notification
@@ -651,52 +656,93 @@ export async function respondToDfyMatch(
     return { success: false, error: 'This notification has already been responded to.' };
   }
 
-  // Validate slot format (ISO UTC string or legacy bracket format)
-  if (selectedSlot.includes('T')) {
-    const d = new Date(selectedSlot);
-    if (isNaN(d.getTime())) return { success: false, error: 'Invalid time slot format.' };
-  } else {
-    const parts = selectedSlot.split('_');
-    if (parts.length !== 2) return { success: false, error: 'Invalid slot format.' };
-    const [date, bracket] = parts;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { success: false, error: 'Invalid date format.' };
-    if (!BRACKET_KEYS.includes(bracket as BracketKey)) return { success: false, error: 'Invalid time bracket.' };
-  }
-
-  // Validate slot is in position's available slots
+  // Get position details
   const { data: position } = await adminClient
     .from('nanny_positions')
-    .select('dfy_time_slots, dfy_expires_at, parent_id, suburb')
+    .select('id, dfy_expires_at, parent_id, suburb, stage')
     .eq('id', notification.position_id)
     .single();
 
+  if (!position) {
+    return { success: false, error: 'Position not found.' };
+  }
+
   // Check if DFY has expired
-  if (position?.dfy_expires_at && new Date(position.dfy_expires_at) <= new Date()) {
+  if (position.dfy_expires_at && new Date(position.dfy_expires_at) <= new Date()) {
     await expireDfyNotifications(notification.position_id);
     return { success: false, error: 'This opportunity has expired. The family\'s search window has closed.' };
   }
 
-  if (!position?.dfy_time_slots?.includes(selectedSlot)) {
-    return { success: false, error: 'Selected time slot is not available for this position.' };
+  // Check no existing active connection between parent and nanny
+  const { data: existingConnection } = await adminClient
+    .from('connection_requests')
+    .select('id')
+    .eq('parent_id', position.parent_id)
+    .eq('nanny_id', nannyInfo.nannyId)
+    .in('status', ['pending', 'accepted', 'confirmed'])
+    .maybeSingle();
+
+  if (existingConnection) {
+    return { success: false, error: 'You already have an active connection with this family.' };
   }
 
-  // Update notification
   const now = new Date().toISOString();
-  const { error: updateErr } = await adminClient
+  const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+
+  // Create connection_request at ACCEPTED (stage 10) — skips REQUEST_SENT
+  const { data: connection, error: insertErr } = await adminClient
+    .from('connection_requests')
+    .insert({
+      parent_id: position.parent_id,
+      nanny_id: nannyInfo.nannyId,
+      position_id: notification.position_id,
+      status: 'accepted',
+      connection_stage: CONNECTION_STAGE.ACCEPTED,
+      proposed_times: availableSlots,
+      responded_at: now,
+      expires_at: expiresAt,
+      source: 'dfy',
+    })
+    .select('id')
+    .single();
+
+  if (insertErr || !connection) {
+    console.error('[DFY] Failed to create connection:', insertErr);
+    return { success: false, error: 'Failed to create connection.' };
+  }
+
+  funnelLog('dfyRespond', connection.id, 'DFY → ACCEPTED (10)', {
+    nannyId: nannyInfo.nannyId, parentId: position.parent_id,
+    positionId: notification.position_id, source: 'dfy',
+  });
+
+  // Mark notification as interested (for DFY metrics)
+  await adminClient
     .from('dfy_match_notifications')
     .update({
       status: 'interested',
       responded_at: now,
-      selected_time_slot: selectedSlot,
       updated_at: now,
     })
     .eq('id', notificationId)
     .in('status', ['notified', 'viewed']);
 
-  if (updateErr) {
-    console.error('[DFY] Respond error:', updateErr);
-    return { success: false, error: 'Failed to submit response.' };
+  // Move position to Connecting if still Open
+  if (position.stage === POSITION_STAGE.OPEN) {
+    await adminClient
+      .from('nanny_positions')
+      .update({ stage: POSITION_STAGE.CONNECTING, position_status: POSITION_STATUS.CONNECTING })
+      .eq('id', position.id)
+      .eq('stage', POSITION_STAGE.OPEN);
   }
+
+  await logConnectionEvent({
+    connectionRequestId: connection.id,
+    parentId: position.parent_id,
+    nannyId: nannyInfo.nannyId,
+    eventType: 'dfy_interest_accepted',
+    eventData: { source: 'dfy', slotsCount: availableSlots.length },
+  });
 
   // Get nanny name for parent notification
   const nannyEmailInfo = await getUserEmailInfo(nannyInfo.userId);
@@ -710,32 +756,26 @@ export async function respondToDfyMatch(
     .single();
 
   if (parentData) {
-    // Inbox message
     await createInboxMessage({
       userId: parentData.user_id,
       type: 'dfy_nanny_interested',
-      title: `${nannyName} is interested in your position!`,
-      body: `${nannyName} has expressed interest and selected a preferred time for an intro call. Review their profile on your dashboard.`,
+      title: `${nannyName} is interested and available for an intro!`,
+      body: `${nannyName} has shared their availability. Pick a time for a 15-minute intro call.`,
       actionUrl: '/parent/position',
-      referenceId: notificationId,
-      referenceType: 'dfy_match_notification',
+      referenceId: connection.id,
+      referenceType: 'connection_request',
     });
 
-    // DFY-002 email (fire-and-forget)
     const parentEmailInfo = await getUserEmailInfo(parentData.user_id);
     if (parentEmailInfo) {
-      const slotDisplay = formatSlotForDisplay(selectedSlot);
       sendEmail({
         to: parentEmailInfo.email,
-        subject: `${nannyName} is interested in your position!`,
+        subject: `${nannyName} is interested and available for an intro!`,
         html: `<div style="${BASE_STYLE}">
           <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
-          <p style="color: #374151; font-size: 16px; line-height: 1.6;">${nannyName} has expressed interest in your nanny position and is available for an intro call.</p>
-          <div style="background: #F0FDF4; border: 1px solid #86EFAC; border-radius: 8px; padding: 16px; margin: 16px 0;">
-            <p style="margin: 0; font-weight: 600; color: #166534;">Preferred Time: ${slotDisplay}</p>
-          </div>
-          <p style="color: #374151; font-size: 14px;">Review their profile and approve or decline on your dashboard.</p>
-          <p style="margin-top: 24px;"><a href="${APP_URL}/parent/position" style="${BTN_STYLE}">Review Applicant</a></p>
+          <p style="color: #374151; font-size: 16px; line-height: 1.6;">${nannyName} has expressed interest in your nanny position and shared their availability for an intro call.</p>
+          <p style="color: #374151; font-size: 14px;">Pick a time that works for you to schedule a 15-minute intro.</p>
+          <p style="margin-top: 24px;"><a href="${APP_URL}/parent/position" style="${BTN_STYLE}">Pick a Time</a></p>
         </div>`,
         emailType: 'dfy_parent_applicant',
         recipientUserId: parentData.user_id,
@@ -744,7 +784,8 @@ export async function respondToDfyMatch(
   }
 
   revalidatePath('/nanny/positions');
-  return { success: true, error: null };
+  revalidatePath('/parent/position');
+  return { success: true, error: null, connectionId: connection.id };
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -778,12 +819,12 @@ export async function markDfyNotificationViewed(
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// 6. GET DFY APPLICANTS (Parent)
+// 6. GET DFY CONNECTIONS (Parent)
 // ════════════════════════════════════════════════════════════════════════════
 
-export async function getDfyApplicants(
+export async function getDfyConnections(
   positionId: string
-): Promise<{ data: DfyApplicant[] | null; error: string | null }> {
+): Promise<{ data: DfyConnection[] | null; error: string | null }> {
   const parentId = await getParentId();
   if (!parentId) {
     return { data: null, error: 'Not authenticated as parent' };
@@ -803,25 +844,37 @@ export async function getDfyApplicants(
     return { data: null, error: 'Position not found.' };
   }
 
-  // Get interested notifications
-  const { data: notifications, error } = await adminClient
-    .from('dfy_match_notifications')
-    .select('id, nanny_id, match_score, distance_km, selected_time_slot, responded_at, metadata')
+  // Get DFY connections (source='dfy') for this position — exclude cancelled/declined
+  const { data: connections, error } = await adminClient
+    .from('connection_requests')
+    .select('id, nanny_id, connection_stage, proposed_times, confirmed_time, position_id')
     .eq('position_id', positionId)
-    .eq('status', 'interested')
-    .order('match_score', { ascending: false });
+    .eq('source', 'dfy')
+    .not('connection_stage', 'in', `(${CONNECTION_STAGE.NOT_HIRED},${CONNECTION_STAGE.NOT_SELECTED},${CONNECTION_STAGE.CANCELLED_BY_PARENT},${CONNECTION_STAGE.CANCELLED_BY_NANNY})`)
+    .order('created_at', { ascending: false });
 
   if (error) {
-    console.error('[DFY] Error fetching applicants:', error);
-    return { data: null, error: 'Failed to fetch applicants.' };
+    console.error('[DFY] Error fetching connections:', error);
+    return { data: null, error: 'Failed to fetch connections.' };
   }
 
-  if (!notifications || notifications.length === 0) {
+  if (!connections || connections.length === 0) {
     return { data: [], error: null };
   }
 
+  // Get match data from dfy_match_notifications
+  const nannyIds = connections.map(c => c.nanny_id);
+  const { data: notifications } = await adminClient
+    .from('dfy_match_notifications')
+    .select('id, nanny_id, match_score, distance_km, metadata')
+    .eq('position_id', positionId)
+    .in('nanny_id', nannyIds);
+
+  const notificationMap = new Map(
+    (notifications ?? []).map(n => [n.nanny_id, n])
+  );
+
   // Get nanny profiles
-  const nannyIds = notifications.map(n => n.nanny_id);
   const { data: nannies } = await adminClient
     .from('nannies')
     .select('id, user_id, hourly_rate_min, total_experience_years, ai_content, wwcc_verified')
@@ -850,21 +903,28 @@ export async function getDfyApplicants(
     ])
   );
 
-  const result: DfyApplicant[] = notifications.map(n => {
-    const nanny = nannyMap.get(n.nanny_id);
+  const result: DfyConnection[] = connections.map(c => {
+    const notification = notificationMap.get(c.nanny_id);
+    const nanny = nannyMap.get(c.nanny_id);
     const profile = nanny ? profileMap.get(nanny.user_id) : null;
 
-    const meta = n.metadata as Record<string, unknown> | null;
+    const meta = notification?.metadata as Record<string, unknown> | null;
     const bd = meta?.breakdown as { experience: number; schedule: number; location: number } | undefined;
+    const bonuses = (meta?.overQualifiedBonuses as string[]) ?? [];
+    const unmet = (meta?.unmetRequirements as string[]) ?? [];
 
     return {
-      notificationId: n.id,
-      nannyId: n.nanny_id,
-      matchScore: n.match_score,
-      distanceKm: n.distance_km,
-      selectedTimeSlot: n.selected_time_slot,
-      respondedAt: n.responded_at,
+      connectionId: c.id,
+      notificationId: notification?.id ?? '',
+      nannyId: c.nanny_id,
+      connectionStage: c.connection_stage,
+      proposedTimes: c.proposed_times,
+      confirmedTime: c.confirmed_time,
+      matchScore: notification?.match_score ?? 0,
+      distanceKm: notification?.distance_km ?? null,
       breakdown: bd ?? null,
+      overQualifiedBonuses: bonuses,
+      unmetRequirements: unmet,
       nanny: {
         firstName: profile?.first_name ?? 'Nanny',
         lastName: profile?.last_name ?? '',
@@ -875,7 +935,7 @@ export async function getDfyApplicants(
         aiHeadline: nanny?.ai_content?.headline ?? null,
         dateOfBirth: profile?.date_of_birth ?? null,
         wwccVerified: nanny?.wwcc_verified ?? false,
-        schedule: availabilityMap.get(n.nanny_id) ?? null,
+        schedule: availabilityMap.get(c.nanny_id) ?? null,
       },
     };
   });
@@ -884,343 +944,11 @@ export async function getDfyApplicants(
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// 7. APPROVE DFY APPLICANT (Parent)
+// 8. DECLINE DFY CONNECTION (Parent)
 // ════════════════════════════════════════════════════════════════════════════
 
-export async function approveDfyApplicant(
-  notificationId: string
-): Promise<{ success: boolean; error: string | null; connectionId?: string }> {
-  const adminClient = createAdminClient();
-
-  const parentId = await getParentId();
-  if (!parentId) {
-    return { success: false, error: 'Not authenticated as parent' };
-  }
-
-  // Get notification
-  const { data: notification, error: fetchErr } = await adminClient
-    .from('dfy_match_notifications')
-    .select('id, position_id, nanny_id, selected_time_slot, status')
-    .eq('id', notificationId)
-    .single();
-
-  if (fetchErr || !notification) {
-    return { success: false, error: 'Notification not found.' };
-  }
-
-  if (notification.status !== 'interested') {
-    return { success: false, error: 'This nanny has not expressed interest.' };
-  }
-
-  // Verify parent owns the position
-  const { data: position } = await adminClient
-    .from('nanny_positions')
-    .select('id, parent_id, stage')
-    .eq('id', notification.position_id)
-    .eq('parent_id', parentId)
-    .single();
-
-  if (!position) {
-    return { success: false, error: 'Position not found.' };
-  }
-
-  // Check for existing connection with same nanny
-  const { data: existingConnection } = await adminClient
-    .from('connection_requests')
-    .select('id')
-    .eq('parent_id', parentId)
-    .eq('nanny_id', notification.nanny_id)
-    .in('status', ['pending', 'accepted', 'confirmed'])
-    .maybeSingle();
-
-  if (existingConnection) {
-    return { success: false, error: 'You already have an active connection with this nanny.' };
-  }
-
-  // Get nanny data
-  const { data: nanny } = await adminClient
-    .from('nannies')
-    .select('id, user_id')
-    .eq('id', notification.nanny_id)
-    .single();
-
-  if (!nanny) {
-    return { success: false, error: 'Nanny not found.' };
-  }
-
-  // Get phone numbers
-  const phone = await getNannyPhone(nanny.user_id);
-
-  const { data: parentRecord } = await adminClient
-    .from('parents')
-    .select('user_id')
-    .eq('id', parentId)
-    .single();
-
-  const parentPhone = parentRecord ? await getParentPhone(parentRecord.user_id) : null;
-
-  // Determine if the selected time slot is still valid
-  const confirmedTime = slotToConfirmedTime(notification.selected_time_slot);
-  const nowIso = new Date().toISOString();
-  const isSlotPast = new Date(confirmedTime) <= new Date();
-
-  // Check if slot is already taken by another approved connection
-  let isSlotTaken = false;
-  if (!isSlotPast) {
-    const { data: conflictingConnection } = await adminClient
-      .from('connection_requests')
-      .select('id')
-      .eq('position_id', notification.position_id)
-      .eq('confirmed_time', confirmedTime)
-      .in('status', ['confirmed', 'accepted'])
-      .not('connection_stage', 'in', `(${CONNECTION_STAGE.NOT_HIRED},${CONNECTION_STAGE.NOT_SELECTED},${CONNECTION_STAGE.CANCELLED_BY_PARENT},${CONNECTION_STAGE.CANCELLED_BY_NANNY})`)
-      .maybeSingle();
-    isSlotTaken = !!conflictingConnection;
-  }
-
-  const isSlotStale = isSlotPast || isSlotTaken;
-
-  // ── Stale slot: fallback to REQUEST_SENT → nanny proposes new times ──
-  if (isSlotStale) {
-    const { data: connection, error: insertErr } = await adminClient
-      .from('connection_requests')
-      .insert({
-        parent_id: parentId,
-        nanny_id: notification.nanny_id,
-        position_id: notification.position_id,
-        status: 'pending',
-        connection_stage: CONNECTION_STAGE.REQUEST_SENT,
-        proposed_times: [],
-        source: 'dfy',
-        expires_at: new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString(),
-      })
-      .select('id')
-      .single();
-
-    if (insertErr || !connection) {
-      console.error('[DFY] Failed to create fallback connection:', insertErr);
-      return { success: false, error: 'Failed to create connection.' };
-    }
-
-    funnelLog('dfyApprove', connection.id, 'DFY → REQUEST_SENT (0) [stale slot]', {
-      nannyId: notification.nanny_id, parentId,
-      positionId: notification.position_id, source: 'dfy',
-      reason: isSlotPast ? 'slot_past' : 'slot_taken',
-    });
-
-    // Update notification status
-    await adminClient
-      .from('dfy_match_notifications')
-      .update({ status: 'approved', updated_at: nowIso })
-      .eq('id', notificationId);
-
-    // Move position to Connecting if still Open
-    if (position.stage === POSITION_STAGE.OPEN) {
-      await adminClient
-        .from('nanny_positions')
-        .update({ stage: POSITION_STAGE.CONNECTING, position_status: POSITION_STATUS.CONNECTING })
-        .eq('id', position.id)
-        .eq('stage', POSITION_STAGE.OPEN);
-    }
-
-    await logConnectionEvent({
-      connectionRequestId: connection.id,
-      parentId, nannyId: notification.nanny_id,
-      eventType: 'dfy_approved_stale_slot',
-      eventData: { source: 'dfy', reason: isSlotPast ? 'slot_past' : 'slot_taken' },
-    });
-
-    // Notify nanny to propose new times
-    const nannyEmailInfo = await getUserEmailInfo(nanny.user_id);
-    const parentProfileForInbox = parentRecord ? await getUserEmailInfo(parentRecord.user_id) : null;
-    const parentNameForInbox = parentProfileForInbox ? `the ${parentProfileForInbox.lastName} family` : 'a family';
-
-    await createInboxMessage({
-      userId: nanny.user_id,
-      type: 'connection_request',
-      title: `${parentNameForInbox} approved your interest!`,
-      body: 'The original time is no longer available. Please suggest your available times for a 15-minute intro call.',
-      actionUrl: '/nanny/positions',
-      referenceId: connection.id,
-      referenceType: 'connection_request',
-    });
-
-    if (nannyEmailInfo) {
-      sendEmail({
-        to: nannyEmailInfo.email,
-        subject: `Great news — ${parentNameForInbox} wants to connect!`,
-        html: `<div style="${BASE_STYLE}">
-          <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
-          <p style="color: #374151; font-size: 16px; line-height: 1.6;">Hi ${nannyEmailInfo.firstName},</p>
-          <p style="color: #374151; font-size: 16px; line-height: 1.6;">Great news! ${parentNameForInbox} loved your profile and approved your interest. The original time slot is no longer available, so please suggest your available times for a 15-minute intro call.</p>
-          <p style="margin-top: 24px;"><a href="${APP_URL}/nanny/positions" style="${BTN_STYLE}">Suggest Times</a></p>
-        </div>`,
-        emailType: 'dfy_stale_slot_request',
-        recipientUserId: nanny.user_id,
-      }).catch(err => console.error('[DFY] Stale slot email error:', err));
-    }
-
-    revalidatePath('/parent/position');
-    revalidatePath('/parent/connections');
-    revalidatePath('/nanny/positions');
-    revalidatePath('/nanny/inbox');
-    return { success: true, error: null, connectionId: connection.id };
-  }
-
-  // ── Valid slot: proceed with INTRO_SCHEDULED flow ──
-  const { data: connection, error: insertErr } = await adminClient
-    .from('connection_requests')
-    .insert({
-      parent_id: parentId,
-      nanny_id: notification.nanny_id,
-      position_id: notification.position_id,
-      status: 'confirmed',
-      connection_stage: CONNECTION_STAGE.INTRO_SCHEDULED,
-      proposed_times: [],
-      confirmed_time: confirmedTime,
-      confirmed_at: nowIso,
-      nanny_phone_shared: phone,
-      parent_phone_shared: parentPhone,
-      source: 'dfy',
-    })
-    .select('id')
-    .single();
-
-  if (insertErr || !connection) {
-    console.error('[DFY] Failed to create connection:', insertErr);
-    return { success: false, error: 'Failed to create connection.' };
-  }
-
-  funnelLog('dfyApprove', connection.id, 'DFY → INTRO_SCHEDULED (20)', {
-    nannyId: notification.nanny_id,
-    parentId,
-    positionId: notification.position_id,
-    source: 'dfy',
-  });
-
-  // Update notification status
-  await adminClient
-    .from('dfy_match_notifications')
-    .update({ status: 'approved', updated_at: nowIso })
-    .eq('id', notificationId);
-
-  // Move position to Connecting if still Open
-  if (position.stage === POSITION_STAGE.OPEN) {
-    await adminClient
-      .from('nanny_positions')
-      .update({
-        stage: POSITION_STAGE.CONNECTING,
-        position_status: POSITION_STATUS.CONNECTING,
-      })
-      .eq('id', position.id)
-      .eq('stage', POSITION_STAGE.OPEN);
-  }
-
-  // Log event
-  await logConnectionEvent({
-    connectionRequestId: connection.id,
-    parentId,
-    nannyId: notification.nanny_id,
-    eventType: 'dfy_approved',
-    eventData: { confirmed_time: confirmedTime, source: 'dfy' },
-  });
-
-  // Get names for emails
-  const nannyEmailInfo = await getUserEmailInfo(nanny.user_id);
-  const nannyName = nannyEmailInfo ? `${nannyEmailInfo.firstName} ${nannyEmailInfo.lastName}` : 'Your nanny';
-  const confirmedDate = formatSydneyDate(confirmedTime);
-
-  if (parentRecord) {
-    // Inbox message for parent
-    await createInboxMessage({
-      userId: parentRecord.user_id,
-      type: 'connection_confirmed',
-      title: `Intro call scheduled with ${nannyName}!`,
-      body: `Your intro is set for ${confirmedDate}. View contact details on your dashboard.`,
-      actionUrl: '/parent/connections',
-      referenceId: connection.id,
-      referenceType: 'connection_request',
-      metadata: { phone, confirmed_time: confirmedTime },
-    });
-
-    // INT-002 email to parent
-    const parentEmailInfo = await getUserEmailInfo(parentRecord.user_id);
-    if (parentEmailInfo) {
-      sendEmail({
-        to: parentEmailInfo.email,
-        subject: `Intro call scheduled with ${nannyName}!`,
-        html: `<div style="${BASE_STYLE}">
-          <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
-          <p style="color: #374151; font-size: 16px; line-height: 1.6;">Your 15-minute intro with ${nannyName} is confirmed.</p>
-          <div style="background: #F0FDF4; border: 1px solid #86EFAC; border-radius: 8px; padding: 16px; margin: 16px 0;">
-            <p style="margin: 0; font-weight: 600; color: #166534;">Call Time: ${confirmedDate}</p>
-          </div>
-          <p style="color: #374151; font-size: 14px;">Contact details are available on your Baby Bloom dashboard.</p>
-          <p style="margin-top: 24px;"><a href="${APP_URL}/parent/connections" style="${BTN_STYLE}">View Details</a></p>
-        </div>`,
-        emailType: 'interview_confirmed',
-        recipientUserId: parentRecord.user_id,
-      }).catch(err => console.error('[DFY] INT-002 email error:', err));
-    }
-  }
-
-  // Inbox message for nanny (include parent phone for call prompt)
-  const parentProfileForInbox = parentRecord ? await getUserEmailInfo(parentRecord.user_id) : null;
-  const parentNameForInbox = parentProfileForInbox ? `${parentProfileForInbox.firstName} ${parentProfileForInbox.lastName}` : 'the family';
-  await createInboxMessage({
-    userId: nanny.user_id,
-    type: 'connection_confirmed_nanny',
-    title: 'Intro call scheduled',
-    body: parentPhone
-      ? `Your intro is set for ${confirmedDate}. Please call ${parentNameForInbox} at ${parentPhone}.`
-      : `Your intro is set for ${confirmedDate}. Contact details are on your dashboard.`,
-    actionUrl: '/nanny/inbox',
-    referenceId: connection.id,
-    referenceType: 'connection_request',
-    metadata: { confirmed_time: confirmedTime, parent_phone: parentPhone },
-  });
-
-  // INT-003 email to nanny — includes parent phone + call CTA
-  if (nannyEmailInfo) {
-    const parentName = parentNameForInbox;
-    const phoneBlock = parentPhone
-      ? `<div style="background: #F0FDF4; border: 1px solid #86EFAC; border-radius: 8px; padding: 16px; margin: 16px 0;">
-          <p style="margin: 0 0 4px; font-weight: 600; color: #166534;">Call ${parentName}</p>
-          <p style="margin: 0; font-size: 20px; font-weight: 700; color: #166534;"><a href="tel:${parentPhone}" style="color: #166534; text-decoration: none;">${parentPhone}</a></p>
-        </div>`
-      : '';
-
-    sendEmail({
-      to: nannyEmailInfo.email,
-      subject: `Intro call scheduled with ${parentName}`,
-      html: `<div style="${BASE_STYLE}">
-        <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
-        <p style="color: #374151; font-size: 16px; line-height: 1.6;">Great news! ${parentName} has approved your interest. Your 15-minute intro is confirmed.</p>
-        <div style="background: #F5F3FF; border: 1px solid #C4B5FD; border-radius: 8px; padding: 16px; margin: 16px 0;">
-          <p style="margin: 0; font-weight: 600; color: #5B21B6;">Call Time: ${confirmedDate}</p>
-        </div>
-        ${phoneBlock}
-        <p style="color: #374151; font-size: 14px;">Please call the family at the scheduled time. The intro is a quick 15-minute chat so the family can get to know you.</p>
-        <p style="margin-top: 24px;"><a href="${APP_URL}/nanny/inbox" style="${BTN_STYLE}">View in Inbox</a></p>
-      </div>`,
-      emailType: 'interview_confirmed',
-      recipientUserId: nanny.user_id,
-    }).catch(err => console.error('[DFY] INT-003 email error:', err));
-  }
-
-  revalidatePath('/parent/position');
-  revalidatePath('/parent/connections');
-  revalidatePath('/nanny/positions');
-  revalidatePath('/nanny/inbox');
-  return { success: true, error: null, connectionId: connection.id };
-}
-
-// ════════════════════════════════════════════════════════════════════════════
-// 8. DECLINE DFY APPLICANT (Parent)
-// ════════════════════════════════════════════════════════════════════════════
-
-export async function declineDfyApplicant(
-  notificationId: string
+export async function declineDfyConnection(
+  connectionId: string
 ): Promise<{ success: boolean; error: string | null }> {
   const adminClient = createAdminClient();
 
@@ -1229,39 +957,45 @@ export async function declineDfyApplicant(
     return { success: false, error: 'Not authenticated as parent' };
   }
 
-  // Get notification
-  const { data: notification, error: fetchErr } = await adminClient
-    .from('dfy_match_notifications')
-    .select('id, position_id, nanny_id, status')
-    .eq('id', notificationId)
-    .single();
-
-  if (fetchErr || !notification) {
-    return { success: false, error: 'Notification not found.' };
-  }
-
-  if (notification.status !== 'interested') {
-    return { success: false, error: 'This nanny has not expressed interest.' };
-  }
-
-  // Verify parent owns the position
-  const { data: position } = await adminClient
-    .from('nanny_positions')
-    .select('id')
-    .eq('id', notification.position_id)
+  // Find the DFY connection
+  const { data: connection, error: fetchErr } = await adminClient
+    .from('connection_requests')
+    .select('id, parent_id, nanny_id, position_id, source, connection_stage')
+    .eq('id', connectionId)
     .eq('parent_id', parentId)
+    .eq('source', 'dfy')
     .single();
 
-  if (!position) {
-    return { success: false, error: 'Position not found.' };
+  if (fetchErr || !connection) {
+    return { success: false, error: 'Connection not found.' };
   }
 
-  // Update notification status
+  // Cancel the connection
   const now = new Date().toISOString();
+  await adminClient
+    .from('connection_requests')
+    .update({
+      status: 'declined',
+      connection_stage: CONNECTION_STAGE.CANCELLED_BY_PARENT,
+      updated_at: now,
+    })
+    .eq('id', connectionId);
+
+  // Mark the related DFY notification as declined
   await adminClient
     .from('dfy_match_notifications')
     .update({ status: 'declined', updated_at: now })
-    .eq('id', notificationId);
+    .eq('position_id', connection.position_id)
+    .eq('nanny_id', connection.nanny_id)
+    .eq('status', 'interested');
+
+  await logConnectionEvent({
+    connectionRequestId: connectionId,
+    parentId,
+    nannyId: connection.nanny_id,
+    eventType: 'dfy_declined',
+    eventData: { source: 'dfy' },
+  });
 
   revalidatePath('/parent/position');
   return { success: true, error: null };
@@ -1561,15 +1295,16 @@ export async function getDfyStatus(): Promise<{
   expired: boolean;
   notifiedCount: number;
   interestedCount: number;
-  approvedCount: number;
-  hasPendingShare: boolean;
+  connectedCount: number;
   tier: 'standard' | 'priority' | null;
   maxRespondents: number;
+  positionId: string | null;
 }> {
   const defaultResult = {
     activated: false, activatedAt: null, expiresAt: null, expired: false,
-    notifiedCount: 0, interestedCount: 0, approvedCount: 0, hasPendingShare: false,
+    notifiedCount: 0, interestedCount: 0, connectedCount: 0,
     tier: null as 'standard' | 'priority' | null, maxRespondents: DFY_TIERS.standard.maxRespondents,
+    positionId: null as string | null,
   };
 
   const parentId = await getParentId();
@@ -1579,17 +1314,14 @@ export async function getDfyStatus(): Promise<{
 
   const { data: position } = await adminClient
     .from('nanny_positions')
-    .select('id, dfy_activated_at, dfy_expires_at, dfy_wave_sent, dfy_time_slots, dfy_tier')
+    .select('id, dfy_activated_at, dfy_expires_at, dfy_wave_sent, dfy_tier')
     .eq('parent_id', parentId)
     .in('status', ['active', 'filled'])
     .maybeSingle();
 
   if (!position) return defaultResult;
 
-  // Check if time slots are saved but DFY not yet activated (pending share)
-  const hasPendingShare = !!(position.dfy_time_slots && position.dfy_time_slots.length > 0 && !position.dfy_activated_at);
-
-  if (!position.dfy_activated_at) return { ...defaultResult, hasPendingShare };
+  if (!position.dfy_activated_at) return { ...defaultResult, positionId: position.id };
 
   const activatedTier = (position.dfy_tier as DfyTier) || 'standard';
   const tierConfig = DFY_TIERS[activatedTier];
@@ -1615,12 +1347,18 @@ export async function getDfyStatus(): Promise<{
     .eq('position_id', position.id);
 
   let interestedCount = 0;
-  let approvedCount = 0;
 
   for (const n of notifications ?? []) {
     if (n.status === 'interested') interestedCount++;
-    if (n.status === 'approved') approvedCount++;
   }
+
+  // Count DFY connections
+  const { count: connectedCount } = await adminClient
+    .from('connection_requests')
+    .select('id', { count: 'exact', head: true })
+    .eq('position_id', position.id)
+    .eq('source', 'dfy')
+    .not('connection_stage', 'in', `(${CONNECTION_STAGE.NOT_HIRED},${CONNECTION_STAGE.NOT_SELECTED},${CONNECTION_STAGE.CANCELLED_BY_PARENT},${CONNECTION_STAGE.CANCELLED_BY_NANNY})`);
 
   return {
     activated: true,
@@ -1629,10 +1367,10 @@ export async function getDfyStatus(): Promise<{
     expired: isExpired,
     notifiedCount: (notifications ?? []).length,
     interestedCount,
-    approvedCount,
-    hasPendingShare: false,
+    connectedCount: connectedCount ?? 0,
     tier: activatedTier,
     maxRespondents: tierConfig.maxRespondents,
+    positionId: position.id,
   };
 }
 
@@ -1715,62 +1453,6 @@ async function expireDfyNotifications(
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// 11. SAVE DFY TIME SLOTS (Parent) — stage slots without triggering DFY
-// ════════════════════════════════════════════════════════════════════════════
-
-export async function saveDfyTimeSlots(
-  timeSlots: string[]
-): Promise<{ success: boolean; error?: string }> {
-  const adminClient = createAdminClient();
-
-  const parentId = await getParentId();
-  if (!parentId) {
-    return { success: false, error: 'Not authenticated as parent' };
-  }
-
-  // Get active position
-  const { data: position, error: positionError } = await getPosition();
-  if (positionError || !position) {
-    return { success: false, error: positionError || 'No active position found' };
-  }
-
-  // Validate time slots
-  if (!timeSlots || timeSlots.length < 3) {
-    return { success: false, error: 'Please select at least 3 preferred time slots.' };
-  }
-
-  for (const slot of timeSlots) {
-    const d = new Date(slot);
-    if (isNaN(d.getTime())) {
-      return { success: false, error: 'Invalid time slot format.' };
-    }
-  }
-
-  // Store time slots on position (but do NOT activate DFY yet)
-  const now = new Date().toISOString();
-  const { error: updateError } = await adminClient
-    .from('nanny_positions')
-    .update({
-      dfy_time_slots: timeSlots,
-      updated_at: now,
-    })
-    .eq('id', position.id);
-
-  if (updateError) {
-    console.error('[saveDfyTimeSlots] Update error:', updateError);
-    return { success: false, error: 'Failed to save time slots.' };
-  }
-
-  // Auto-create viral_shares record at READY if it doesn't exist
-  const { createShareRecord } = await import('@/lib/actions/viral-loop');
-  const { SHARE_CASE_TYPE } = await import('@/lib/viral-loop/constants');
-  await createShareRecord(SHARE_CASE_TYPE.PARENT_POSITION, position.id);
-
-  revalidatePath('/parent/matches');
-  return { success: true };
-}
-
-// ════════════════════════════════════════════════════════════════════════════
 // 11b. CONFIRM MATCHMAKING (activate DFY without share proof)
 // ════════════════════════════════════════════════════════════════════════════
 
@@ -1785,23 +1467,22 @@ export async function confirmMatchmaking(): Promise<{ success: boolean; error?: 
     return { success: false, error: positionError || 'No active position found' };
   }
 
-  // Check position has time slots saved
   const adminClient = createAdminClient();
   const { data: pos } = await adminClient
     .from('nanny_positions')
-    .select('id, dfy_time_slots, dfy_activated_at')
+    .select('id, dfy_activated_at')
     .eq('id', position.id)
     .single();
 
-  if (!pos?.dfy_time_slots || !Array.isArray(pos.dfy_time_slots) || pos.dfy_time_slots.length < 3) {
-    return { success: false, error: 'Please select at least 3 time slots first.' };
+  if (!pos) {
+    return { success: false, error: 'Position not found.' };
   }
 
   if (pos.dfy_activated_at) {
     return { success: false, error: 'Matchmaking is already active.' };
   }
 
-  // Activate DFY directly (without share proof) — standard tier
+  // Activate DFY directly — standard tier
   await activateDfyPosition(pos.id, 'standard');
 
   revalidatePath('/parent/matches');
@@ -1816,20 +1497,15 @@ export async function activateDfyPosition(positionId: string, tier: DfyTier = 's
   const adminClient = createAdminClient();
   const config = DFY_TIERS[tier];
 
-  // Get position + stored dfy_time_slots
+  // Get position
   const { data: position } = await adminClient
     .from('nanny_positions')
-    .select('id, dfy_time_slots, dfy_activated_at, parent_id')
+    .select('id, dfy_activated_at, parent_id')
     .eq('id', positionId)
     .single();
 
   if (!position) {
     console.error('[activateDfyPosition] Position not found:', positionId);
-    return;
-  }
-
-  if (!position.dfy_time_slots || position.dfy_time_slots.length === 0) {
-    console.error('[activateDfyPosition] No time slots stored for position:', positionId);
     return;
   }
 

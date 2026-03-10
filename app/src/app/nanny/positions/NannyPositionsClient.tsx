@@ -24,6 +24,7 @@ import { cancelConnectionRequest } from "@/lib/actions/connection";
 import { getDfyNotificationsForNanny, respondToDfyMatch, markDfyNotificationViewed } from "@/lib/actions/matching";
 import type { DfyNotification } from "@/lib/actions/matching";
 import { PositionAccordion } from "@/components/position/PositionAccordion";
+import { AvailabilityGrid } from "@/components/position/AvailabilityGrid";
 
 function formatStartWeekDisplay(dateStr: string): string {
   if (dateStr === "tbc") return "Start week to be confirmed";
@@ -114,10 +115,14 @@ export function NannyPositionsClient({ placements, upcomingIntros = [] }: NannyP
   const [dfyLoading, setDfyLoading] = useState(false);
   const [dfyLoaded, setDfyLoaded] = useState(false);
   const [dfyRespondingId, setDfyRespondingId] = useState<string | null>(null);
-  const [dfySelectedSlots, setDfySelectedSlots] = useState<Record<string, string>>({});
   const [dfySuccess, setDfySuccess] = useState<string | null>(null);
   const [dfyInterestedId, setDfyInterestedId] = useState<string | null>(null);
   const [dfyError, setDfyError] = useState<string | null>(null);
+  const [selectedDfyIntro, setSelectedDfyIntro] = useState<UpcomingIntro | null>(null);
+
+  // DFY intros from upcomingIntros (for ConnectionDetailPopup on responded DFY cards)
+  const dfyIntros = upcomingIntros.filter(i => i.source === 'dfy');
+  const dfyIntroMap = new Map(dfyIntros.map(i => [i.positionId, i]));
 
   // Load DFY notifications
   if (!dfyLoaded && !dfyLoading) {
@@ -129,26 +134,23 @@ export function NannyPositionsClient({ placements, upcomingIntros = [] }: NannyP
     });
   }
 
-  const handleDfyRespond = async (notificationId: string) => {
-    const selectedSlot = dfySelectedSlots[notificationId];
-    if (!selectedSlot) return;
+  const handleDfyRespond = async (notificationId: string, slots: string[]) => {
+    if (slots.length === 0) return;
     setDfyRespondingId(notificationId);
     setDfyError(null);
-    const result = await respondToDfyMatch(notificationId, selectedSlot);
+    const result = await respondToDfyMatch(notificationId, slots);
     setDfyRespondingId(null);
     if (result.success) {
       setDfySuccess(notificationId);
-      // Keep card but update status to 'interested'
       setDfyNotifications(prev => prev.map(n =>
         n.id === notificationId
-          ? { ...n, status: 'interested', selectedTimeSlot: selectedSlot, respondedAt: new Date().toISOString() }
+          ? { ...n, status: 'interested', respondedAt: new Date().toISOString() }
           : n
       ));
       setDfyInterestedId(null);
       setTimeout(() => setDfySuccess(null), 3000);
     } else {
       setDfyError(result.error);
-      // If expired, remove from local state
       if (result.error?.includes('expired')) {
         setDfyNotifications(prev => prev.filter(n => n.id !== notificationId));
         setDfyInterestedId(null);
@@ -170,6 +172,7 @@ export function NannyPositionsClient({ placements, upcomingIntros = [] }: NannyP
   const activeConnections = upcomingIntros.filter(
     (i) => i.connectionStage !== CONNECTION_STAGE.REQUEST_SENT &&
            i.connectionStage !== CONNECTION_STAGE.NOT_HIRED &&
+           i.source !== 'dfy' &&
            !(i.positionId && activePlacementPositionIds.has(i.positionId))
   );
   const [dismissing, setDismissing] = useState<string | null>(null);
@@ -926,199 +929,149 @@ export function NannyPositionsClient({ placements, upcomingIntros = [] }: NannyP
         </section>
       )}
 
-      {/* DFY Matched Families */}
-      {dfyNotifications.length > 0 && (
+      {/* DFY Matched Families — always visible */}
+      {dfyLoaded && (
         <section className="space-y-4">
           <h2 className="flex items-center gap-2 text-lg font-semibold text-violet-700">
             <Sparkles className="h-5 w-5" />
-            Matched Families ({dfyNotifications.length})
+            Matched Families{dfyNotifications.length > 0 ? ` (${dfyNotifications.length})` : ""}
           </h2>
-          <div className="grid gap-3">
-            {dfyNotifications.map((notification) => {
-              const score = Math.round(50 + (notification.matchScore / 100) * 50);
-              const bracketLabels: Record<string, string> = {
-                morning: "Morning (8-11am)",
-                midday: "Midday (11am-2pm)",
-                afternoon: "Afternoon (2-5pm)",
-                evening: "Evening (5-8pm)",
-              };
-              const selectedSlot = dfySelectedSlots[notification.id];
-              const isResponding = dfyRespondingId === notification.id;
-              const isLocallyInterested = dfyInterestedId === notification.id;
-              const isPending = notification.status === "interested";
-              const parentSurname = notification.parent.lastName;
 
-              // Format the selected time for confirmation
-              const selectedSlotLabel = selectedSlot
-                ? selectedSlot.includes("T")
-                  ? formatSydneyDate(selectedSlot)
-                  : (() => {
-                      const [date, bracket] = selectedSlot.split("_");
-                      const d = new Date(date + "T00:00:00");
-                      const dayName = d.toLocaleDateString("en-AU", { weekday: "short", timeZone: "Australia/Sydney" });
-                      const dateStr = d.toLocaleDateString("en-AU", { day: "numeric", month: "short", timeZone: "Australia/Sydney" });
-                      return `${dayName} ${dateStr} — ${bracketLabels[bracket] ?? bracket}`;
-                    })()
-                : null;
+          {dfyNotifications.length === 0 ? (
+            <Card className="border-slate-200 bg-slate-50/50">
+              <CardContent className="py-6 text-center">
+                <p className="text-sm text-slate-500">
+                  When families match with you, they&apos;ll appear here.
+                </p>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="grid gap-3">
+              {dfyNotifications.map((notification) => {
+                const score = Math.round(50 + (notification.matchScore / 100) * 50);
+                const isResponding = dfyRespondingId === notification.id;
+                const isLocallyInterested = dfyInterestedId === notification.id;
+                const isPending = notification.status === "interested";
+                const parentSurname = notification.parent.lastName;
 
-              return (
-                <Card key={notification.id} className="border-violet-200 bg-violet-50/30">
-                  <CardContent className="py-4 space-y-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-center gap-3">
-                        {notification.parent.profilePicUrl ? (
-                          <img
-                            src={notification.parent.profilePicUrl}
-                            alt=""
-                            className="h-10 w-10 rounded-full object-cover"
-                          />
-                        ) : (
-                          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-violet-100">
-                            <span className="text-sm font-semibold text-violet-600">
-                              {notification.parent.firstName.charAt(0)}
-                            </span>
-                          </div>
-                        )}
-                        <div>
-                          <p className="text-sm font-medium text-slate-900">
-                            {notification.parent.firstName} {notification.parent.lastName}
-                          </p>
-                          <div className="flex items-center gap-2 text-xs text-slate-500">
-                            {notification.position.suburb && (
-                              <span className="flex items-center gap-1">
-                                <MapPin className="h-3 w-3" />
-                                {notification.position.suburb}
-                                {notification.distanceKm != null && ` (${notification.distanceKm.toFixed(1)}km)`}
+                return (
+                  <Card key={notification.id} className="border-violet-200 bg-violet-50/30">
+                    <CardContent className="py-4 space-y-3">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex items-center gap-3">
+                          {notification.parent.profilePicUrl ? (
+                            <img
+                              src={notification.parent.profilePicUrl}
+                              alt=""
+                              className="h-10 w-10 rounded-full object-cover"
+                            />
+                          ) : (
+                            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-violet-100">
+                              <span className="text-sm font-semibold text-violet-600">
+                                {notification.parent.firstName.charAt(0)}
                               </span>
-                            )}
-                            {notification.position.hourlyRate && (
-                              <span className="flex items-center gap-1">
-                                <DollarSign className="h-3 w-3" />
-                                ${notification.position.hourlyRate}/hr
-                              </span>
-                            )}
+                            </div>
+                          )}
+                          <div>
+                            <p className="text-sm font-medium text-slate-900">
+                              {notification.parent.firstName} {notification.parent.lastName}
+                            </p>
+                            <div className="flex items-center gap-2 text-xs text-slate-500">
+                              {notification.position.suburb && (
+                                <span className="flex items-center gap-1">
+                                  <MapPin className="h-3 w-3" />
+                                  {notification.position.suburb}
+                                  {notification.distanceKm != null && ` (${notification.distanceKm.toFixed(1)}km)`}
+                                </span>
+                              )}
+                              {notification.position.hourlyRate && (
+                                <span className="flex items-center gap-1">
+                                  <DollarSign className="h-3 w-3" />
+                                  ${notification.position.hourlyRate}/hr
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </div>
+                        <span className={`shrink-0 text-xs font-bold px-2 py-0.5 rounded-full ${
+                          score >= 90 ? "bg-green-100 text-green-700" :
+                          score >= 75 ? "bg-violet-100 text-violet-700" :
+                          "bg-amber-100 text-amber-700"
+                        }`}>
+                          {score}% {notification.dfyTier === 'standard' ? 'Logistical Score' : 'Match'}
+                        </span>
                       </div>
-                      <span className={`shrink-0 text-xs font-bold px-2 py-0.5 rounded-full ${
-                        score >= 90 ? "bg-green-100 text-green-700" :
-                        score >= 75 ? "bg-violet-100 text-violet-700" :
-                        "bg-amber-100 text-amber-700"
-                      }`}>
-                        {score}% match
-                      </span>
-                    </div>
 
-                    {/* Context message */}
-                    {!isPending && (
-                      <p className="text-xs text-slate-600">
-                        The {parentSurname} family would love to speak to you about working with their children.
-                      </p>
-                    )}
-
-                    {/* Full position details accordion */}
-                    <PositionAccordion position={notification.position} />
-
-                    {/* ── Pending state (already responded) ── */}
-                    {isPending && (
-                      <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                        {notification.selectedTimeSlot
-                          ? `Your intro ${notification.selectedTimeSlot.includes("T") ? formatSydneyDate(notification.selectedTimeSlot) : notification.selectedTimeSlot} is pending the family's approval. We will update you on their response.`
-                          : "Your interest is pending the family's approval. We will update you on their response."}
-                      </p>
-                    )}
-
-                    {/* ── Step 1: "I'm interested" button (before local interest) ── */}
-                    {!isPending && !isLocallyInterested && (
-                      <Button
-                        size="sm"
-                        onClick={() => {
-                          setDfyInterestedId(notification.id);
-                          // Mark as viewed
-                          if (notification.status === "notified") {
-                            markDfyNotificationViewed(notification.id);
-                          }
-                        }}
-                        className="bg-violet-600 hover:bg-violet-700 w-full"
-                      >
-                        <Heart className="w-3.5 h-3.5 mr-1.5" />
-                        I&apos;m interested
-                      </Button>
-                    )}
-
-                    {/* ── Step 2: Time picker (after local interest) ── */}
-                    {!isPending && isLocallyInterested && (
-                      <div className="space-y-3">
-                        <p className="text-xs font-medium text-slate-700">
-                          When would you like to speak with the {parentSurname} family?
+                      {/* Context message */}
+                      {!isPending && !isLocallyInterested && (
+                        <p className="text-xs text-slate-600">
+                          The {parentSurname} family would love to speak to you about working with their children.
                         </p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {notification.availableTimeSlots.map((slot) => {
-                            const isIso = slot.includes("T");
-                            const slotLabel = isIso
-                              ? formatSydneyDate(slot)
-                              : (() => {
-                                  const [date, bracket] = slot.split("_");
-                                  const d = new Date(date + "T00:00:00");
-                                  const dayName = d.toLocaleDateString("en-AU", { weekday: "short", timeZone: "Australia/Sydney" });
-                                  const dateStr = d.toLocaleDateString("en-AU", { day: "numeric", month: "short", timeZone: "Australia/Sydney" });
-                                  return `${dayName} ${dateStr} — ${bracketLabels[bracket] ?? bracket}`;
-                                })();
-                            const isSelected = selectedSlot === slot;
-                            return (
-                              <button
-                                key={slot}
-                                onClick={() => {
-                                  setDfySelectedSlots(prev => ({
-                                    ...prev,
-                                    [notification.id]: isSelected ? "" : slot,
-                                  }));
-                                }}
-                                className={`text-xs px-2.5 py-1.5 rounded-md border transition-colors ${
-                                  isSelected
-                                    ? "bg-violet-600 text-white border-violet-600"
-                                    : "bg-white text-slate-600 border-slate-200 hover:border-violet-300 hover:bg-violet-50"
-                                }`}
-                              >
-                                {slotLabel}
-                              </button>
-                            );
-                          })}
-                        </div>
+                      )}
 
-                        {/* Confirmation text */}
-                        {selectedSlot && selectedSlotLabel && (
-                          <p className="text-xs text-green-700 bg-green-50 rounded-md px-3 py-2">
-                            The {parentSurname} family will call you for your intro on {selectedSlotLabel}.
+                      {/* Full position details accordion */}
+                      <PositionAccordion position={notification.position} />
+
+                      {/* ── Pending state (already responded) — clickable if connection exists ── */}
+                      {isPending && (() => {
+                        const matchingIntro = dfyIntroMap.get(notification.positionId);
+                        if (matchingIntro) {
+                          const badge = getStageBadge(matchingIntro.connectionStage, matchingIntro.fillInitiatedBy);
+                          return (
+                            <div
+                              className="flex items-center justify-between gap-3 rounded-lg border border-violet-200 bg-white p-3 cursor-pointer hover:bg-violet-50 transition-colors"
+                              onClick={() => setSelectedDfyIntro(matchingIntro)}
+                            >
+                              <div className="flex items-center gap-2 text-sm text-slate-700">
+                                <span className="font-medium">View connection progress</span>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className={`rounded-full px-2.5 py-1 text-xs font-medium whitespace-nowrap ${badge.color}`}>
+                                  {badge.label}
+                                </span>
+                                <ChevronRight className="h-4 w-4 text-slate-300" />
+                              </div>
+                            </div>
+                          );
+                        }
+                        return (
+                          <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                            Interest sent — awaiting the family&apos;s response.
                           </p>
-                        )}
+                        );
+                      })()}
 
-                        {/* Confirm button */}
+                      {/* ── Step 1: "I'm interested" button ── */}
+                      {!isPending && !isLocallyInterested && (
                         <Button
                           size="sm"
-                          onClick={() => handleDfyRespond(notification.id)}
-                          disabled={!selectedSlot || isResponding}
+                          onClick={() => {
+                            setDfyInterestedId(notification.id);
+                            if (notification.status === "notified") {
+                              markDfyNotificationViewed(notification.id);
+                            }
+                          }}
                           className="bg-violet-600 hover:bg-violet-700 w-full"
                         >
-                          {isResponding ? (
-                            <>
-                              <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />
-                              Confirming...
-                            </>
-                          ) : (
-                            <>
-                              <CheckCircle className="w-3.5 h-3.5 mr-1.5" />
-                              Confirm
-                            </>
-                          )}
+                          <Heart className="w-3.5 h-3.5 mr-1.5" />
+                          I&apos;m interested
                         </Button>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
+                      )}
+
+                      {/* ── Step 2: Inline AvailabilityGrid (same as regular connections) ── */}
+                      {!isPending && isLocallyInterested && (
+                        <AvailabilityGrid
+                          submitting={isResponding}
+                          onBack={() => setDfyInterestedId(null)}
+                          onConfirm={(slots) => handleDfyRespond(notification.id, slots)}
+                        />
+                      )}
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
+          )}
         </section>
       )}
 
@@ -1126,7 +1079,7 @@ export function NannyPositionsClient({ placements, upcomingIntros = [] }: NannyP
       {dfySuccess && (
         <div className="fixed bottom-4 right-4 bg-green-600 text-white px-4 py-3 rounded-lg shadow-lg text-sm font-medium flex items-center gap-2 z-50 animate-in fade-in slide-in-from-bottom-4">
           <CheckCircle className="w-4 h-4" />
-          You&apos;ve expressed interest! The family will review your application.
+          Interest sent! The family will pick an intro time.
         </div>
       )}
 
@@ -1319,6 +1272,45 @@ export function NannyPositionsClient({ placements, upcomingIntros = [] }: NannyP
           return result;
         }}
       />
+
+      {/* DFY Connection Detail Popup */}
+      {(() => {
+        const selectedDfyNotification = dfyNotifications.find(n => n.positionId === selectedDfyIntro?.positionId);
+        return (
+          <ConnectionDetailPopup
+            intro={selectedDfyIntro}
+            open={selectedDfyIntro !== null}
+            onOpenChange={(open) => {
+              if (!open) {
+                setSelectedDfyIntro(null);
+                router.refresh();
+              }
+            }}
+            role="nanny"
+            matchData={selectedDfyNotification ? {
+              matchScore: selectedDfyNotification.matchScore,
+              distanceKm: selectedDfyNotification.distanceKm,
+              breakdown: null,
+              nannySchedule: null,
+              aiHeadline: null,
+              tier: selectedDfyNotification.dfyTier,
+            } : null}
+            onIntroOutcome={handleIntroOutcome}
+            onTrialOutcome={handleTrialOutcome}
+            onConfirmPosition={handleConfirmPosition}
+            onDismissConnection={async (connectionId) => {
+              const result = await nannyDismissConnection(connectionId);
+              if (result.success) router.refresh();
+              return result;
+            }}
+            onRemoveConnection={async (connectionId) => {
+              const result = await cancelConnectionRequest(connectionId);
+              if (result.success) router.refresh();
+              return result;
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }

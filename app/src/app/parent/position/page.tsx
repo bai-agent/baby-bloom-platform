@@ -2,6 +2,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { AlertCircle } from "lucide-react";
 import { getPosition, PositionWithChildren } from "@/lib/actions/parent";
 import { getParentPlacement, getConfirmedConnections, getParentUpcomingIntros } from "@/lib/actions/position-funnel";
+import { getDfyStatus } from "@/lib/actions/matching";
 import { POSITION_STAGE } from "@/lib/position/constants";
 import { PositionPageClient } from "./PositionPageClient";
 
@@ -46,15 +47,17 @@ export default async function ParentPositionPage() {
   }
 
   // Fetch placement + confirmed connections for Path B + upcoming intros
-  const [placementResult, connectionsResult, introsResult] = await Promise.all([
+  const [placementResult, connectionsResult, introsResult, dfyStatusResult] = await Promise.all([
     getParentPlacement(),
     position?.id ? getConfirmedConnections(position.id) : Promise.resolve({ data: [], error: null }),
     getParentUpcomingIntros(),
+    getDfyStatus(),
   ]);
 
   const placement = placementResult.data;
   const confirmedNannies = connectionsResult.data;
   const upcomingIntros = introsResult.data;
+  const dfyTier = dfyStatusResult.tier;
   const showFillButton = position && !placement &&
     (position as PositionWithChildren & { stage?: number }).stage === POSITION_STAGE.CONNECTING &&
     confirmedNannies.length > 0;
@@ -91,6 +94,7 @@ export default async function ParentPositionPage() {
         confirmedNannies={confirmedNannies}
         showFillButton={!!showFillButton}
         upcomingIntros={upcomingIntros}
+        dfyTier={dfyTier}
       />
 
       {/* How to create — only when no position */}

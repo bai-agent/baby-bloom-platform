@@ -2,14 +2,9 @@
 
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Sparkles, Clock, Rocket, ArrowLeft, Loader2, AlertTriangle, Check } from 'lucide-react';
+import { Sparkles, Rocket, ArrowLeft, Loader2, AlertTriangle, Check } from 'lucide-react';
 import { confirmMatchmaking } from '@/lib/actions/matching';
 import Link from 'next/link';
-
-interface TimeSlot {
-  iso: string;
-  label: string;
-}
 
 const STANDARD_FEATURES = [
   'Top 20 nearby + available nannies contacted',
@@ -25,7 +20,7 @@ const PRIORITY_FEATURES = [
   'Up to 10 interested nannies + waitlist',
 ];
 
-export function MatchmakerCheckoutClient({ timeSlots }: { timeSlots: TimeSlot[] }) {
+export function MatchmakerCheckoutClient() {
   const [showConfirm, setShowConfirm] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -52,11 +47,11 @@ export function MatchmakerCheckoutClient({ timeSlots }: { timeSlots: TimeSlot[] 
       <div className="max-w-2xl mx-auto px-4 py-8 sm:py-12">
         {/* Back link */}
         <Link
-          href="/parent/matches/matchmaker"
+          href="/parent/matches"
           className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-700 mb-6"
         >
           <ArrowLeft className="w-4 h-4" />
-          Edit times
+          Back to matches
         </Link>
 
         {/* Header */}
@@ -68,31 +63,8 @@ export function MatchmakerCheckoutClient({ timeSlots }: { timeSlots: TimeSlot[] 
             Choose your matchmaker plan
           </h1>
           <p className="text-slate-600 mt-2 max-w-md mx-auto">
-            Review your intro call times and choose how to activate your matchmaker.
+            Choose how to activate your matchmaker.
           </p>
-        </div>
-
-        {/* Time slots card */}
-        <div className="bg-white border border-slate-200 rounded-xl p-4 sm:p-5 mb-6">
-          <div className="flex items-center gap-2 mb-3">
-            <Clock className="h-5 w-5 text-violet-600" />
-            <h2 className="text-base font-semibold text-slate-900">
-              Your intro call times
-            </h2>
-          </div>
-          <div className="space-y-2">
-            {timeSlots.map((slot, i) => (
-              <div
-                key={slot.iso}
-                className="flex items-center gap-2 bg-violet-50 border border-violet-200 rounded-lg px-3 py-2"
-              >
-                <Clock className="h-3.5 w-3.5 text-violet-500" />
-                <span className="text-sm font-medium text-violet-800">
-                  Slot {i + 1}: {slot.label}
-                </span>
-              </div>
-            ))}
-          </div>
         </div>
 
         {/* Side-by-side comparison */}

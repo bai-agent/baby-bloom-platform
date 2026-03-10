@@ -6,13 +6,13 @@ import {
   ChevronUp,
   Briefcase,
   Baby,
-  MapPin,
 } from "lucide-react";
 
 export interface PositionAccordionData {
   scheduleType: string | null;
   hoursPerWeek: number | null;
   daysRequired: string[] | null;
+  schedule: Record<string, string[]> | null;
   levelOfSupport: string[] | null;
   hourlyRate: number | null;
   children: { ageMonths: number; gender: string | null }[];
@@ -33,11 +33,16 @@ export interface PositionAccordionData {
   description: string | null;
 }
 
-function ageMonthsToLabel(months: number): string {
-  if (months < 12) return `${months}mo`;
-  const years = Math.floor(months / 12);
-  const rem = months % 12;
-  return rem > 0 ? `${years}y ${rem}mo` : `${years}y`;
+function ageLabel(months: number): string {
+  if (months < 24) return `${months}mths`;
+  return `${Math.floor(months / 12)}yrs`;
+}
+
+function genderLabel(gender: string | null): string | null {
+  if (!gender || gender === "Rather Not Say") return null;
+  if (gender === "Male") return "Boy";
+  if (gender === "Female") return "Girl";
+  return null;
 }
 
 export function PositionAccordion({ position }: { position: PositionAccordionData }) {
@@ -74,20 +79,42 @@ export function PositionAccordion({ position }: { position: PositionAccordionDat
                 <p className="font-medium text-slate-700">${position.hourlyRate}/hr</p>
               </div>
             )}
-            {position.daysRequired && position.daysRequired.length > 0 && (
+            {position.scheduleType && (
+              <div className="col-span-2">
+                <span className="text-slate-400">Schedule</span>
+                <p className="font-medium text-slate-700 capitalize">{position.scheduleType}</p>
+              </div>
+            )}
+            {position.schedule && Object.keys(position.schedule).length > 0 ? (
+              <div className="col-span-2">
+                <span className="text-slate-400">Days</span>
+                <div className="space-y-0.5 mt-0.5">
+                  {Object.entries(position.schedule).map(([day, brackets]) => (
+                    <p key={day} className="font-medium text-slate-700 capitalize">
+                      {day}: <span className="font-normal text-slate-500 capitalize">{brackets.join(", ")}</span>
+                    </p>
+                  ))}
+                </div>
+              </div>
+            ) : position.daysRequired && position.daysRequired.length > 0 ? (
               <div className="col-span-2">
                 <span className="text-slate-400">Days</span>
                 <p className="font-medium text-slate-700">{position.daysRequired.join(", ")}</p>
               </div>
-            )}
+            ) : null}
             {position.children.length > 0 && (
               <div className="col-span-2">
                 <span className="text-slate-400 flex items-center gap-1"><Baby className="h-3 w-3" /> Children</span>
-                <p className="font-medium text-slate-700">
-                  {position.children.map((c, i) => (
-                    <span key={i}>{i > 0 ? ", " : ""}{ageMonthsToLabel(c.ageMonths)}{c.gender && c.gender !== "Rather Not Say" ? ` (${c.gender})` : ""}</span>
-                  ))}
-                </p>
+                <div className="space-y-0.5 mt-0.5">
+                  {position.children.map((c, i) => {
+                    const g = genderLabel(c.gender);
+                    return (
+                      <p key={i} className="font-medium text-slate-700">
+                        {g ?? "Child"} <span className="font-normal text-slate-500">{ageLabel(c.ageMonths)}</span>
+                      </p>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>
@@ -96,11 +123,6 @@ export function PositionAccordion({ position }: { position: PositionAccordionDat
             <div>
               <p className="text-xs text-slate-400 mb-1">Description</p>
               <p className="text-xs text-slate-700">{position.description}</p>
-            </div>
-          )}
-          {position.suburb && (
-            <div className="flex items-center gap-1 text-xs text-slate-600">
-              <MapPin className="h-3 w-3" /> {position.suburb}
             </div>
           )}
           {position.urgency && (

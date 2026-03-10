@@ -22,10 +22,10 @@ interface DfyStatusData {
   expired: boolean;
   notifiedCount: number;
   interestedCount: number;
-  approvedCount: number;
-  hasPendingShare: boolean;
+  connectedCount: number;
   tier: 'standard' | 'priority' | null;
   maxRespondents: number;
+  positionId: string | null;
 }
 
 interface MatchResultsClientProps {
@@ -73,7 +73,6 @@ export function MatchResultsClient({
   const sorted = sortMatches(matches, sortBy);
 
   // Determine DFY banner state
-  const hasPendingShare = dfyStatus?.hasPendingShare ?? false;
   const isExpired = dfyTriggered && (dfyStatus?.expired ?? false);
   const isActive = dfyTriggered && !isExpired;
 
@@ -88,35 +87,9 @@ export function MatchResultsClient({
 
   return (
     <>
-      {/* DFY banner — 4 states */}
-      {hasPendingShare && !dfyTriggered ? (
-        /* State 0: Time slots saved, confirmation pending */
-        <div className="bg-gradient-to-r from-violet-50 to-purple-50 border border-violet-200 rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-semibold text-violet-900 flex items-center gap-1.5">
-              <Sparkles className="w-4 h-4 text-violet-600" />
-              Complete your matchmaker request
-            </h3>
-            <p className="text-sm text-violet-700 mt-1">
-              Your intro call times are saved. Confirm to activate your matchmaker.
-            </p>
-          </div>
-          <div className="flex gap-2 shrink-0">
-            <Link href="/parent/matches/matchmaker">
-              <Button variant="outline" className="border-violet-300 text-violet-700 hover:bg-violet-50">
-                Edit times
-              </Button>
-            </Link>
-            <Link href="/parent/matches/checkout">
-              <Button className="bg-violet-600 hover:bg-violet-700">
-                <Sparkles className="w-4 h-4 mr-1.5" />
-                Continue
-              </Button>
-            </Link>
-          </div>
-        </div>
-      ) : !dfyTriggered ? (
-        /* State 1: Not triggered — link to matchmaker page */
+      {/* DFY banner — 3 states */}
+      {!dfyTriggered ? (
+        /* State 1: Not triggered — link to checkout */
         <div className="bg-gradient-to-r from-violet-50 to-purple-50 border border-violet-200 rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
             <h3 className="text-sm font-semibold text-violet-900 flex items-center gap-1.5">
@@ -127,7 +100,7 @@ export function MatchResultsClient({
               We&apos;ll contact your top matches and let interested nannies come to you.
             </p>
           </div>
-          <Link href="/parent/matches/matchmaker">
+          <Link href="/parent/matches/checkout">
             <Button className="bg-violet-600 hover:bg-violet-700 shrink-0">
               <Sparkles className="w-4 h-4 mr-1.5" />
               Find me a nanny
@@ -142,21 +115,21 @@ export function MatchResultsClient({
             <p className="text-sm font-medium text-green-800">
               {dfyStatus?.tier === 'priority'
                 ? "Your position is live \u2014 we're reaching out to your best matched nannies in 3 waves!"
-                : "We've contacted your top 20 matched nannies!"}
+                : "We've contacted your top matched nannies!"}
             </p>
             <p className="text-xs text-green-700 mt-0.5">
               {expiryDisplay && <>Active until {expiryDisplay}</>}
               {dfyStatus?.interestedCount
-                ? <> &mdash; {dfyStatus.interestedCount}/{dfyStatus.maxRespondents} nann{dfyStatus.interestedCount !== 1 ? "ies" : "y"} interested</>
+                ? <> &mdash; {dfyStatus.interestedCount} nann{dfyStatus.interestedCount !== 1 ? "ies" : "y"} interested</>
                 : <> &mdash; Waiting for responses</>}
               {dfyStatus?.interestedCount ? (
-                <> &mdash; <a href="/parent/position" className="underline font-medium">review applicants</a></>
+                <> &mdash; <a href="/parent/position" className="underline font-medium">view interested nannies</a></>
               ) : null}
             </p>
           </div>
         </div>
       ) : (
-        /* State 3: Expired — link to matchmaker page */
+        /* State 3: Expired — link to checkout */
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
             <h3 className="text-sm font-semibold text-amber-900 flex items-center gap-1.5">
@@ -165,11 +138,11 @@ export function MatchResultsClient({
             </h3>
             <p className="text-sm text-amber-700 mt-1">
               {dfyStatus?.interestedCount
-                ? <>{dfyStatus.interestedCount} nann{dfyStatus.interestedCount !== 1 ? "ies" : "y"} still interested &mdash; <a href="/parent/position" className="underline font-medium">review applicants</a></>
+                ? <>{dfyStatus.interestedCount} nann{dfyStatus.interestedCount !== 1 ? "ies" : "y"} still interested &mdash; <a href="/parent/position" className="underline font-medium">view interested nannies</a></>
                 : <>All matched nannies have been notified. Boost again to reach more nannies.</>}
             </p>
           </div>
-          <Link href="/parent/matches/matchmaker">
+          <Link href="/parent/matches/checkout">
             <Button className="bg-violet-600 hover:bg-violet-700 shrink-0">
               <Sparkles className="w-4 h-4 mr-1.5" />
               Boost again

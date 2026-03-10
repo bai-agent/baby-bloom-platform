@@ -35,7 +35,7 @@ const GUIDANCE = {
   no_link:
     "We couldn't find the link to your profile in your screenshot. Try taking the screenshot again showing your full post on the screen so we can spot it!",
   content_mismatch:
-    "Hmm, your post doesn't seem to be about your nanny services. Make sure your post mentions your availability and experience so families know you're ready to help!",
+    "Hmm, we couldn't match your post to your Baby Bloom listing. Make sure you're sharing the post we generated for you — it contains specific details about your listing!",
   name_mismatch:
     "The name on your post doesn't seem to match your Baby Bloom account. Make sure you're sharing from your own Facebook profile!",
   not_recent:

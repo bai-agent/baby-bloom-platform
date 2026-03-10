@@ -347,10 +347,11 @@ export async function processScreenshotCheck(
   }
 
   const isBsr = share.case_type === SHARE_CASE_TYPE.PARENT_BSR;
+  const isPosition = share.case_type === SHARE_CASE_TYPE.PARENT_POSITION;
 
-  // Get user's name for name-matching check (not used for BSR)
+  // Get user's name for name-matching check (nanny profile only — not used for BSR or position)
   let expectedName: string | undefined;
-  if (!isBsr) {
+  if (!isBsr && !isPosition) {
     const { data: profile } = await admin
       .from('user_profiles')
       .select('first_name, last_name')
@@ -363,7 +364,7 @@ export async function processScreenshotCheck(
   }
 
   // For BSR and position shares, use last 5 chars of the reference ID as reference code
-  const needsReferenceCode = isBsr || share.case_type === SHARE_CASE_TYPE.PARENT_POSITION;
+  const needsReferenceCode = isBsr || isPosition;
   const referenceCode = needsReferenceCode && share.reference_id
     ? share.reference_id.slice(-5)
     : undefined;
@@ -390,7 +391,6 @@ export async function processScreenshotCheck(
   }
 
   // If position share approved, activate DFY matchmaking with priority tier
-  const isPosition = share.case_type === SHARE_CASE_TYPE.PARENT_POSITION;
   if (checkResult.verdict === 'approved' && isPosition && share.reference_id) {
     activateDfyPosition(share.reference_id, 'priority').catch(err =>
       console.error('[viral-loop] Failed to activate DFY position:', err)
@@ -701,7 +701,7 @@ export async function getPositionSharePageData(): Promise<{
 
   if (!parent) return { data: null, error: 'Parent not found' };
 
-  // Get active position with dfy_time_slots
+  // Get active position
   const { data: position, error: posErr } = await admin
     .from('nanny_positions')
     .select('id, parent_id, suburb, hourly_rate, hours_per_week, days_required, schedule_type')

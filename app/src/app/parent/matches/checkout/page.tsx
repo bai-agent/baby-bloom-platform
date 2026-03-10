@@ -1,7 +1,6 @@
 import { redirect } from 'next/navigation';
 import { createClient } from '@/lib/supabase/server';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { formatSydneyDate } from '@/lib/timezone';
 import { MatchmakerCheckoutClient } from './MatchmakerCheckoutClient';
 
 export default async function MatchmakerCheckoutPage() {
@@ -22,21 +21,16 @@ export default async function MatchmakerCheckoutPage() {
 
   const { data: position } = await admin
     .from('nanny_positions')
-    .select('id, dfy_time_slots, dfy_activated_at')
+    .select('id, dfy_activated_at')
     .eq('parent_id', parent.id)
     .in('status', ['active', 'filled'])
     .maybeSingle();
 
-  if (!position || !position.dfy_time_slots || position.dfy_activated_at) {
+  if (!position || position.dfy_activated_at) {
     redirect('/parent/matches');
   }
 
-  const slots = (position.dfy_time_slots as string[]).map((iso) => ({
-    iso,
-    label: formatSydneyDate(iso),
-  }));
-
   return (
-    <MatchmakerCheckoutClient timeSlots={slots} />
+    <MatchmakerCheckoutClient />
   );
 }

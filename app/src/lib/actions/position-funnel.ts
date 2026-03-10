@@ -2375,6 +2375,7 @@ interface PositionSummary {
   scheduleType: string | null;
   hoursPerWeek: number | null;
   daysRequired: string[] | null;
+  schedule: Record<string, string[]> | null;
   levelOfSupport: string[] | null;
   hourlyRate: number | null;
   children: { ageMonths: number; gender: string | null }[];
@@ -2412,6 +2413,7 @@ export interface UpcomingIntro {
   nannyPhoneShared: string | null;
   positionId: string | null;
   position: PositionSummary | null;
+  source: string | null;
 }
 
 /** Get upcoming/active intros for nanny's "My Positions" page */
@@ -2431,7 +2433,7 @@ export async function getNannyUpcomingIntros(): Promise<{
 
   const { data: connections } = await adminClient
     .from('connection_requests')
-    .select('id, parent_id, position_id, connection_stage, confirmed_time, fill_initiated_by, trial_date, start_date, status, proposed_times, message, expires_at, nanny_phone_shared')
+    .select('id, parent_id, position_id, connection_stage, confirmed_time, fill_initiated_by, trial_date, start_date, status, proposed_times, message, expires_at, nanny_phone_shared, source')
     .eq('nanny_id', nannyInfo.nannyId)
     .in('connection_stage', [
       CONNECTION_STAGE.REQUEST_SENT,
@@ -2507,6 +2509,16 @@ export async function getNannyUpcomingIntros(): Promise<{
         childrenByPosition.set(child.position_id, arr);
       }
 
+      // Fetch schedule (time brackets) for all positions
+      const { data: scheduleRows } = await adminClient
+        .from('position_schedule')
+        .select('position_id, schedule')
+        .in('position_id', positionIds);
+
+      const scheduleByPosition = new Map<string, Record<string, string[]>>(
+        (scheduleRows || []).map(s => [s.position_id, s.schedule as Record<string, string[]>])
+      );
+
       for (const pos of positions) {
         const parent = posParentMap.get(pos.parent_id);
         const prof = parent ? posProfileMap.get(parent.user_id) : null;
@@ -2514,6 +2526,7 @@ export async function getNannyUpcomingIntros(): Promise<{
           scheduleType: pos.schedule_type,
           hoursPerWeek: pos.hours_per_week,
           daysRequired: pos.days_required,
+          schedule: scheduleByPosition.get(pos.id) || null,
           levelOfSupport: pos.level_of_support,
           hourlyRate: pos.hourly_rate,
           children: childrenByPosition.get(pos.id) || [],
@@ -2557,6 +2570,7 @@ export async function getNannyUpcomingIntros(): Promise<{
       nannyPhoneShared: c.nanny_phone_shared ?? null,
       positionId: c.position_id ?? null,
       position: c.position_id ? positionMap.get(c.position_id) ?? null : null,
+      source: c.source ?? null,
     };
   });
 
@@ -2580,7 +2594,7 @@ export async function getParentUpcomingIntros(): Promise<{
 
   const { data: connections } = await adminClient
     .from('connection_requests')
-    .select('id, nanny_id, connection_stage, confirmed_time, fill_initiated_by, trial_date, start_date, status, proposed_times, message, expires_at, nanny_phone_shared')
+    .select('id, nanny_id, connection_stage, confirmed_time, fill_initiated_by, trial_date, start_date, status, proposed_times, message, expires_at, nanny_phone_shared, source')
     .eq('parent_id', parentId)
     .in('connection_stage', [
       CONNECTION_STAGE.REQUEST_SENT,
@@ -2634,6 +2648,7 @@ export async function getParentUpcomingIntros(): Promise<{
       message: c.message ?? null,
       expiresAt: c.expires_at ?? null,
       nannyPhoneShared: c.nanny_phone_shared ?? null,
+      source: c.source ?? null,
       positionId: null,
       position: null, // Parent doesn't need position data (it's their own)
     };
