@@ -382,17 +382,23 @@ export async function processScreenshotCheck(
   }
 
   // If BSR share approved, activate the BSR (pending_payment → open + notify nannies)
+  // MUST await — fire-and-forget gets killed when serverless function terminates
   if (checkResult.verdict === 'approved' && isBsr && share.reference_id) {
-    activateBsr(share.reference_id).catch(err =>
-      console.error('[viral-loop] Failed to activate BSR:', err)
-    );
+    try {
+      await activateBsr(share.reference_id);
+    } catch (err) {
+      console.error('[viral-loop] Failed to activate BSR:', err);
+    }
   }
 
   // If position share approved, activate DFY matchmaking with priority tier
+  // MUST await — fire-and-forget gets killed when serverless function terminates
   if (checkResult.verdict === 'approved' && isPosition && share.reference_id) {
-    activateDfyPosition(share.reference_id, 'priority').catch(err =>
-      console.error('[viral-loop] Failed to activate DFY position:', err)
-    );
+    try {
+      await activateDfyPosition(share.reference_id, 'priority');
+    } catch (err) {
+      console.error('[viral-loop] Failed to activate DFY position:', err);
+    }
   }
 
   const failReason = checkResult.verdict === 'approved'

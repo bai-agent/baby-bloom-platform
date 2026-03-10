@@ -64,25 +64,35 @@ Use chain-of-thought reasoning internally, then output ONLY JSON.
 Look for any Facebook UI indicators: blue header, reactions, comment/share buttons, profile pictures, navigation icons, Messenger chat heads, notification bell. If it's clearly not Facebook, set is_facebook to false.
 
 ### 2. Is this a Group Post?
-The post can appear in TWO contexts — both are valid:
+The post can appear in MANY contexts on mobile and desktop — all are valid if a group name is visible:
 
 **A. Inside a group (browsing the group directly):**
-- Group name in header/banner, cover photo, "Join/Joined" button, member count
-- "Posted in [Group Name]" label
+- Mobile: group name in the TOP HEADER BAR (e.g. "< [GroupPic] GROUP NAME [search] [...]") with a back arrow — the group name appears as a title bar at the very top of the screen, with the group's profile picture next to it
+- Desktop: group name in banner/header with cover photo
+- "Write something..." compose box below header, "Anonymous post", "Feeling", "Poll" buttons
+- "Most relevant" or sorting options above posts
 - Group navigation tabs (Discussion, Members, Events)
-- Mobile: back arrow with group name, group avatar
+- "Join/Joined" button, member count visible
 
 **B. In the news feed (scrolling home feed):**
-- "[User Name] posted in [Group Name]" or "[User Name] · [Group Name]" above the post
-- Group name as a secondary line below the poster's name (often smaller/lighter font)
-- Mobile: poster name on first line, group name on second line with a small group icon
-- This is STILL a valid group post
+- The post tile shows the GROUP NAME in BOLD as the primary name, with the poster's name in smaller text below it (e.g. "GROUP NAME" on first line, "User Name · Just now · 🌐" on second line) — the group's profile picture appears to the left
+- OR: "[User Name] posted in [Group Name]" header above the post
+- OR: "[User Name] · [Group Name]" next to each other
+- The Facebook bottom tab bar is visible (Home, Reels, Friends, Marketplace, Notifications, Profile)
+- Stories carousel may be visible at the top
+- This is STILL a valid group post — it just appears in the feed
 
-**Group badges (valid in both views):**
+**C. Shared post / cross-posted:**
+- "Shared to [Group Name]" or "Posted in [Group Name]" label
+- Any indication that a group name is associated with the post
+
+**Group badges (valid in all views):**
 - Three-people silhouette, shield, hand/wave, star, crown/key icons next to poster name
 
-**REJECT as not a group post only if:**
-- It's clearly a personal profile/timeline post (no group name anywhere)
+**IMPORTANT: If ANY group name is visible anywhere in the screenshot associated with the post (header bar, above the post, next to the user's name, in a "posted in" label), it IS a group post. Set is_group_post to true.**
+
+**REJECT as not a group post ONLY if:**
+- It's clearly a personal profile/timeline post (no group name visible ANYWHERE)
 - It's a Facebook Page post ("Page · X followers")
 - It's a Story, Reel, or Marketplace listing
 
