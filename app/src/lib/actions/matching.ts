@@ -1509,17 +1509,28 @@ export async function activateDfyPosition(positionId: string, tier: DfyTier = 's
     return;
   }
 
-  // Check DFY status — allow re-trigger only after expiry
+  // Check DFY status — allow re-trigger after expiry OR when upgrading tier (standard → priority)
   if (position.dfy_activated_at) {
     const { data: posData } = await adminClient
       .from('nanny_positions')
-      .select('dfy_expires_at')
+      .select('dfy_expires_at, dfy_tier')
       .eq('id', positionId)
       .single();
 
-    if (posData?.dfy_expires_at && new Date(posData.dfy_expires_at) > new Date()) {
+    const isUpgrade = posData?.dfy_tier === 'standard' && tier === 'priority';
+    if (posData?.dfy_expires_at && new Date(posData.dfy_expires_at) > new Date() && !isUpgrade) {
       console.log('[activateDfyPosition] DFY still active, skipping:', positionId);
       return;
+    }
+
+    // When upgrading, expire old standard notifications so priority starts fresh
+    if (isUpgrade) {
+      await adminClient
+        .from('dfy_match_notifications')
+        .update({ status: 'expired' })
+        .eq('position_id', positionId)
+        .in('status', ['notified', 'pending_wave']);
+      console.log('[activateDfyPosition] Upgrading from standard to priority, expired old notifications');
     }
   }
 
@@ -1535,11 +1546,13 @@ export async function activateDfyPosition(positionId: string, tier: DfyTier = 's
     .eq('position_id', positionId)
     .in('status', ['pending', 'accepted', 'confirmed']);
 
-  // Also exclude ALL previously notified nannies
+  // Also exclude active (non-expired) previously notified nannies
+  // Expired notifications are not excluded — allows tier upgrades and re-triggers to match fresh
   const { data: previouslyNotified } = await adminClient
     .from('dfy_match_notifications')
     .select('nanny_id')
-    .eq('position_id', positionId);
+    .eq('position_id', positionId)
+    .neq('status', 'expired');
 
   const excludedNannyIds = new Set([
     ...(existingConnections ?? []).map(c => c.nanny_id),
@@ -1559,6 +1572,13 @@ export async function activateDfyPosition(positionId: string, tier: DfyTier = 's
   const now = new Date().toISOString();
 
   // Build notification rows — standard: 1 wave (all notified), priority: 3 waves
+  const buildMetadata = (m: typeof topMatches[number]) => ({
+    breakdown: m.breakdown ?? null,
+    headline: m.nanny.ai_content?.headline ?? null,
+    overQualifiedBonuses: m.overQualifiedBonuses,
+    unmetRequirements: m.unmetRequirements,
+  });
+
   let allNotificationRows;
   if (tier === 'standard') {
     // Standard: single wave, all nannies notified immediately
@@ -1571,10 +1591,7 @@ export async function activateDfyPosition(positionId: string, tier: DfyTier = 's
       notified_at: now,
       status: 'notified',
       wave: 1,
-      metadata: {
-        breakdown: m.breakdown ?? null,
-        headline: m.nanny.ai_content?.headline ?? null,
-      },
+      metadata: buildMetadata(m),
     }));
   } else {
     // Priority: 3 waves — ~17 per wave
@@ -1593,10 +1610,7 @@ export async function activateDfyPosition(positionId: string, tier: DfyTier = 's
         notified_at: now,
         status: 'notified',
         wave: 1,
-        metadata: {
-          breakdown: m.breakdown ?? null,
-          headline: m.nanny.ai_content?.headline ?? null,
-        },
+        metadata: buildMetadata(m),
       })),
       ...wave2.map(m => ({
         position_id: positionId,
@@ -1607,10 +1621,7 @@ export async function activateDfyPosition(positionId: string, tier: DfyTier = 's
         notified_at: null,
         status: 'pending_wave',
         wave: 2,
-        metadata: {
-          breakdown: m.breakdown ?? null,
-          headline: m.nanny.ai_content?.headline ?? null,
-        },
+        metadata: buildMetadata(m),
       })),
       ...wave3.map(m => ({
         position_id: positionId,
@@ -1621,10 +1632,7 @@ export async function activateDfyPosition(positionId: string, tier: DfyTier = 's
         notified_at: null,
         status: 'pending_wave',
         wave: 3,
-        metadata: {
-          breakdown: m.breakdown ?? null,
-          headline: m.nanny.ai_content?.headline ?? null,
-        },
+        metadata: buildMetadata(m),
       })),
     ];
   }
