@@ -349,18 +349,16 @@ export async function processScreenshotCheck(
   const isBsr = share.case_type === SHARE_CASE_TYPE.PARENT_BSR;
   const isPosition = share.case_type === SHARE_CASE_TYPE.PARENT_POSITION;
 
-  // Get user's name for name-matching check (nanny profile only — not used for BSR or position)
+  // Get user's name for name-matching check (all share types)
   let expectedName: string | undefined;
-  if (!isBsr && !isPosition) {
-    const { data: profile } = await admin
-      .from('user_profiles')
-      .select('first_name, last_name')
-      .eq('user_id', share.user_id)
-      .maybeSingle();
+  const { data: profile } = await admin
+    .from('user_profiles')
+    .select('first_name, last_name')
+    .eq('user_id', share.user_id)
+    .maybeSingle();
 
-    if (profile?.first_name) {
-      expectedName = [profile.first_name, profile.last_name].filter(Boolean).join(' ');
-    }
+  if (profile?.first_name) {
+    expectedName = [profile.first_name, profile.last_name].filter(Boolean).join(' ');
   }
 
   // For BSR and position shares, use last 5 chars of the reference ID as reference code

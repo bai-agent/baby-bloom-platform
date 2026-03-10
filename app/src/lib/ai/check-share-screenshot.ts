@@ -52,74 +52,81 @@ const GUIDANCE = {
 
 // ── Shared system prompt (Facebook UI verification) ──
 
-const FB_UI_SYSTEM_BASE = `You are a Facebook UI verification specialist. Your task is to analyse a screenshot and determine if it shows a genuine, recently published post inside a Facebook group.
+const FB_UI_SYSTEM_BASE = `You are a Facebook screenshot verifier. Your job is to catch obvious fraud — not to be a strict quality gate. Be LENIENT. When in doubt, APPROVE.
+
+We want to catch: private posts, personal profile posts (not in a group), someone else's post, very old posts, and posts pending admin approval. Everything else — let it through.
 
 Use chain-of-thought reasoning internally, then output ONLY JSON.
 
-## Verification Process
+## Checks
 
 ### 1. Is this Facebook?
-First determine if the screenshot is from Facebook at all. Look for:
-- Facebook's distinctive blue header, navigation icons, or logo
-- Facebook-specific UI elements (reactions, comment/share buttons, profile pictures with Facebook styling)
-- If this is clearly NOT Facebook (e.g. a random photo, another app, a website), set is_facebook to false and skip all other checks.
+Look for any Facebook UI indicators: blue header, reactions, comment/share buttons, profile pictures, navigation icons, Messenger chat heads, notification bell. If it's clearly not Facebook, set is_facebook to false.
 
-### 2. Layout & Group Context
-If it IS Facebook, determine if this is a GROUP post (not a personal profile/timeline, page, or story):
-- "Posted in [Group Name]" header
-- Group UI elements: rules link, member count, cover photo, "Join/Joined" button
-- Mobile: group avatar next to group name/back arrow
-- Desktop: expanded sidebars, group navigation
-- Group-exclusive badges next to poster name (three-people circle, shield, hand/wave, star)
+### 2. Is this a Group Post?
+The post can appear in TWO contexts — both are valid:
+
+**A. Inside a group (browsing the group directly):**
+- Group name in header/banner, cover photo, "Join/Joined" button, member count
+- "Posted in [Group Name]" label
+- Group navigation tabs (Discussion, Members, Events)
+- Mobile: back arrow with group name, group avatar
+
+**B. In the news feed (scrolling home feed):**
+- "[User Name] posted in [Group Name]" or "[User Name] · [Group Name]" above the post
+- Group name as a secondary line below the poster's name (often smaller/lighter font)
+- Mobile: poster name on first line, group name on second line with a small group icon
+- This is STILL a valid group post
+
+**Group badges (valid in both views):**
+- Three-people silhouette, shield, hand/wave, star, crown/key icons next to poster name
+
+**REJECT as not a group post only if:**
+- It's clearly a personal profile/timeline post (no group name anywhere)
+- It's a Facebook Page post ("Page · X followers")
+- It's a Story, Reel, or Marketplace listing
 
 ### 3. Poster Identity
-Check if the poster's name matches the expected user name (allow nicknames, partials, additional names — e.g. "Jane Smith" matches "Janie S." or "J. Smith", but reject clear mismatches).
+Check if the poster's name resembles the expected user name. Be very lenient:
+- First name match alone is fine
+- Nicknames, shortened names, middle names, maiden/married names — all OK
+- Only set name_matches to false if the names are completely different people
+- If no expected name provided, set to true
 
 ### 4. Privacy & Visibility
-**CRITICAL: If a PADLOCK icon appears next to the poster's name, this means the post is private (Only Me/Friends) — NOT visible to the group. Set is_publicly_visible to false.**
-- "Public Group" / "Private Group" labels are fine (that's the group's privacy, not the post's)
-- Post must be in a group feed (not Stories, Friends tab, profile timeline, or page)
+Set is_publicly_visible to false ONLY if you see a PADLOCK icon next to the poster's name or timestamp. No padlock = assume visible. "Public Group"/"Private Group" labels are fine — that's the group's setting, not the post's.
 
-### 5. Recency — BE STRICT
-**This check is critical. You must be strict about recency.**
-Verify the timestamp on the post. ONLY approve if it shows:
-- "Just now", "Xm" (minutes), "Xh" (hours) — APPROVED
-- "Xd" (days) where X is 1-7 — APPROVED
-- "Yesterday" — APPROVED
-- "Pending Approval" or similar moderation text — APPROVED
-- A specific date within the last 7 days from today — APPROVED
+Also set is_publicly_visible to false if the post shows "Pending Approval", "Pending", "Under Review", or similar admin moderation text — the post hasn't been approved by group admins yet and is not visible to group members.
 
-FAIL recency if:
-- The timestamp shows a specific date older than 7 days (e.g. "March 2025", "15 February", last year)
-- The timestamp shows weeks, months, or years (e.g. "2w", "3mo", "1y", "March 15")
-- No timestamp is visible at all
-- Any ambiguous date that could be older than 7 days
+### 5. Recency
+APPROVE if timestamp shows: "Just now", minutes, hours, "Yesterday", or days (up to 7 days).
+FAIL if: weeks/months/years old, a specific date older than 7 days, or no timestamp visible.
 
-**When in doubt about recency, FAIL it. We want FRESH posts only.**
+### 6. Group Relevance — BE LENIENT
+We want ANY legitimate community group, ideally in Sydney/Australia. This includes:
+- Childcare, nanny, babysitting, parenting groups
+- Local community groups, buy/sell/swap groups, mums groups
+- Suburb-specific groups, neighbourhood groups
+- Any group based in Sydney, NSW, or an Australian city/suburb
 
-### 6. Group Relevance
-Examine the group name, description, or any visible context to determine if this is a childcare, nanny, babysitting, parenting, or family-related group in Sydney/Australia.
-- Keywords: nanny, babysitter, childcare, au pair, mum, mom, parent, family, kids, children, daycare, ECEC
-- Sydney/Australian location indicators
-- If the group name is not visible but group UI indicators are strong, note as "unknown but plausible"
+Set is_relevant_group to true if the group appears to be any kind of community/local group. Only set to false if it's clearly unrelated (e.g. a gaming group, an overseas group with no Australian connection, a meme page).
 
-### 7. Link Check
-The post MUST contain a Baby Bloom link element. Look for:
-- A Facebook link preview card/attachment showing "babybloomsydney.com.au" (any slug is OK)
-- The URL text "babybloomsydney.com.au" visible in the post body
-- If the post is cut off and the link might be below the visible area, set link_present to false
+If the group name is not fully visible, give benefit of the doubt and set to true.
 
-### 8. Post Content Check
+### 7. OG Image / Link Check
+Look for a Baby Bloom link preview card or the URL "babybloomsydney.com.au" anywhere in the post. The link preview image (OG card) is the most important indicator — it's a branded card with nanny/family info.
+
+### 8. Post Content — BE VERY LENIENT
 {CONTENT_CHECK_INSTRUCTIONS}
 
-### 9. Reference Code Check (if provided)
-If a reference code was specified in the instructions, look at the link preview card/image in the post. In the bottom-right corner of that preview image, directly above the "BabyBloom" logo text, there should be a 5-character code in small gray text. Check if this code matches the expected reference code exactly. Set reference_code_matches to true if it matches, false if not visible or different. If no reference code was specified, set to true.
+### 9. Reference Code (if provided)
+If a reference code was specified, look at the link preview card/image. In the bottom-right corner, above the "BabyBloom" logo text, there may be a 5-character code in small gray text. Do your best to read it. Set reference_code_matches to true if it matches, false otherwise. If no code was specified, set to true.
 
-## Decision Criteria
-APPROVE only if ALL checks pass. If ANY check fails, DECLINE.
+## Decision Approach
+Be LENIENT. The goal is fraud prevention, not perfection. If the screenshot looks like a genuine recent group post with a Baby Bloom link, APPROVE it. Only DECLINE for clear violations.
 
 ## Output Format
-Return ONLY this JSON (no other text):
+Return ONLY this JSON:
 {
   "verdict": "Approved" or "Declined",
   "confidence": 0-100,
@@ -134,36 +141,18 @@ Return ONLY this JSON (no other text):
   "reference_code_matches": true/false,
   "detected_group_name": "Group Name" or null,
   "detected_timestamp": "the timestamp text visible on the post" or null,
-  "reasoning": "Concise chain-of-thought summary"
+  "detected_poster_name": "the poster name visible on the post" or null,
+  "detected_reference_code": "the code you read from the preview image" or null,
+  "reasoning": "Brief explanation"
 }`;
 
 // ── Case-specific content check instructions ──
 
-const CONTENT_CHECK_NANNY_PROFILE = `Examine the post content. This should be a nanny/babysitter advertising their services or availability. Look for:
-- First-person language about being available to nanny or babysit
-- Mentions of experience, qualifications, WWCC, First Aid
-- Sydney suburb or area mentioned
-- Availability information (days, hours, schedule)
-- References to Baby Bloom
-The tone should be warm and professional — someone offering childcare services.`;
+const CONTENT_CHECK_NANNY_PROFILE = `The post should be broadly related to childcare, nannying, or babysitting. The user may have edited the text — that's fine. As long as the Baby Bloom OG image/link is present and the post isn't about something completely unrelated (e.g. selling furniture, politics), set content_matches to true. Be very lenient here.`;
 
-const CONTENT_CHECK_PARENT_POSITION = `Examine the post content. This should be a parent/family looking for a nanny. Look for:
-- First-person language about looking for a nanny or childcare help
-- Mentions of children (number, ages)
-- Schedule needs (days per week, hours)
-- Location (Sydney suburb)
-- Requirements (experience, WWCC, First Aid, driver's licence, etc.)
-- References to Baby Bloom
-The tone should be warm and genuine — a family seeking childcare support.`;
+const CONTENT_CHECK_PARENT_POSITION = `The post should be broadly related to childcare, nannying, or looking for a nanny/babysitter. The user may have edited the text — that's fine. As long as the Baby Bloom OG image/link is present and the post isn't about something completely unrelated (e.g. selling furniture, politics), set content_matches to true. Be very lenient here.`;
 
-const CONTENT_CHECK_PARENT_BSR = `Examine the post content. This should be a parent looking for a babysitter for a specific date/time. Look for:
-- Urgency or time-specificity ("this Saturday", "tonight", a specific date)
-- Babysitting context (not ongoing nanny position)
-- Mentions of children (number, ages)
-- Specific time slot (evening, afternoon, etc.)
-- Location (Sydney suburb)
-- References to Baby Bloom
-The tone should be casual and slightly urgent — someone needing a babysitter soon.`;
+const CONTENT_CHECK_PARENT_BSR = `The post should be broadly related to childcare or babysitting. The user may have edited the text — that's fine. As long as the Baby Bloom OG image/link is present and the post isn't about something completely unrelated (e.g. selling furniture, politics), set content_matches to true. Be very lenient here.`;
 
 function getContentCheckInstructions(caseType: ShareCaseType): string {
   switch (caseType) {
@@ -187,7 +176,7 @@ function buildSystemPrompt(caseType: ShareCaseType): string {
 
 // ── Confidence threshold ──
 
-const APPROVE_CONFIDENCE_THRESHOLD = 70;
+const APPROVE_CONFIDENCE_THRESHOLD = 50;
 
 // ── Main check function ──
 
@@ -209,7 +198,7 @@ export async function checkShareScreenshot(
     }
 
     const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-4o',
       messages: [
         { role: 'system', content: systemPrompt },
         {
@@ -261,8 +250,37 @@ export async function checkShareScreenshot(
     if (!checks.name_matches) failReasons.push('Poster name mismatch');
     if (!checks.reference_code_matches) failReasons.push('Reference code not visible in screenshot');
 
-    const allChecksPassed = Object.values(checks).every(Boolean);
-    const approved = allChecksPassed && confidence >= APPROVE_CONFIDENCE_THRESHOLD;
+    // ── Core checks (hard — these catch obvious fraud) ──
+    // content_matches is NOT a hard check — user may edit text, OG image is enough
+    const coreChecksPassed =
+      checks.is_facebook &&
+      checks.is_group_post &&
+      checks.is_relevant_group &&
+      checks.is_recent &&
+      checks.is_publicly_visible &&
+      checks.link_present;
+
+    // ── Identity verification (name + reference code) ──
+    // For BSR and position: name and code are COMPLEMENTARY soft checks.
+    // Either one passing is enough. Both failing = fail.
+    // For nanny profile: name is a hard check (no reference code used).
+    const isBsrOrPosition =
+      caseType === SHARE_CASE_TYPE.PARENT_BSR ||
+      caseType === SHARE_CASE_TYPE.PARENT_POSITION;
+
+    let identityPassed: boolean;
+    if (isBsrOrPosition) {
+      // Complementary: name OR code → pass; both fail → fail
+      identityPassed = checks.name_matches || checks.reference_code_matches;
+      if (!identityPassed) {
+        failReasons.push('Neither name nor reference code could be verified');
+      }
+    } else {
+      // Nanny profile: name is hard check
+      identityPassed = checks.name_matches;
+    }
+
+    const approved = coreChecksPassed && identityPassed && confidence >= APPROVE_CONFIDENCE_THRESHOLD;
 
     if (!approved && failReasons.length === 0) {
       failReasons.push('Low confidence score');
@@ -295,22 +313,36 @@ function pickGuidance(checks: ScreenshotCheckResult['checks'], caseType: ShareCa
   const isPosition = caseType === SHARE_CASE_TYPE.PARENT_POSITION;
 
   if (!checks.is_facebook) {
-    if (isBsr) return "Oops! It looks like the image you uploaded isn't of your babysitting position. Try uploading a screenshot of your post in a Facebook group.";
-    if (isPosition) return "Oops! It looks like the image you uploaded isn't of your nanny position. Try uploading a screenshot of your post in a Facebook group.";
+    if (isBsr) return "Oops! It looks like the image you uploaded isn't of your babysitting request. Try uploading a screenshot of your post in a Facebook group.";
+    if (isPosition) return "Oops! It looks like the image you uploaded isn't of your position listing. Try uploading a screenshot of your post in a Facebook group.";
     return GUIDANCE.not_facebook;
   }
-  if (!checks.is_group_post) return GUIDANCE.not_group_post;
-  if (!checks.is_publicly_visible) return GUIDANCE.not_visible;
-  if (!checks.is_relevant_group) return GUIDANCE.not_relevant_group;
+  if (!checks.is_group_post) {
+    if (isBsr) return "Oops! It looks like your screenshot isn't showing a Facebook group post. Try taking a new screenshot from inside the group that shows the group name and your babysitting request.";
+    if (isPosition) return "Oops! It looks like your screenshot isn't showing a Facebook group post. Try taking a new screenshot from inside the group that shows the group name and your position listing.";
+    return GUIDANCE.not_group_post;
+  }
+  if (!checks.is_publicly_visible) return "It looks like your post hasn't been approved by the group admin yet, or was shared privately. Wait for admin approval then try again, or share in a group that doesn't require post approval!";
+  if (!checks.is_relevant_group) {
+    if (isBsr) return "Oops! It looks like your post wasn't shared in a childcare or parenting group. Try sharing in a Sydney mums or childcare Facebook group — that's where nannies will see it!";
+    if (isPosition) return "Oops! It looks like your post wasn't shared in a childcare or parenting group. Try sharing in a Sydney mums or childcare Facebook group — that's where nannies will see it!";
+    return GUIDANCE.not_relevant_group;
+  }
   if (!checks.is_recent) return GUIDANCE.not_recent;
-  if (!checks.link_present) return GUIDANCE.no_link;
+  if (!checks.link_present) {
+    if (isBsr) return "We couldn't find the Baby Bloom link in your screenshot. Try taking the screenshot again showing your full babysitting request post with the link preview visible!";
+    if (isPosition) return "We couldn't find the Baby Bloom link in your screenshot. Try taking the screenshot again showing your full position listing post with the link preview visible!";
+    return GUIDANCE.no_link;
+  }
   if (!checks.content_matches) return GUIDANCE.content_mismatch;
   if (!checks.name_matches) return GUIDANCE.name_mismatch;
   if (!checks.reference_code_matches) {
-    if (isBsr) return "We couldn't tell that the post was of your babysitting position. Please make sure that the full post (including the preview image) is visible in your next attempt.";
-    if (isPosition) return "We couldn't tell that the post was of your nanny position. Please make sure that the full post (including the preview image) is visible in your next attempt.";
+    if (isBsr) return "We couldn't verify that this post is for your babysitting request. Please make sure the full post (including the preview image) is visible in your screenshot.";
+    if (isPosition) return "We couldn't verify that this post is for your position listing. Please make sure the full post (including the preview image) is visible in your screenshot.";
     return GUIDANCE.reference_code_mismatch;
   }
+  if (isBsr) return "We couldn't quite verify your screenshot. Try taking a clear screenshot showing your full babysitting request in a Sydney childcare Facebook group and upload it again!";
+  if (isPosition) return "We couldn't quite verify your screenshot. Try taking a clear screenshot showing your full position listing in a Sydney childcare Facebook group and upload it again!";
   return GUIDANCE.generic_fallback;
 }
 
