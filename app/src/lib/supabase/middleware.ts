@@ -11,8 +11,8 @@ const PROTECTED_ROUTES: Record<string, UserRole[]> = {
 const AUTH_ROUTES = ['/login', '/signup', '/forgot-password', '/reset-password'];
 
 const ROLE_DASHBOARDS: Record<UserRole, string> = {
-  nanny: '/nanny/dashboard',
-  parent: '/parent/dashboard',
+  nanny: '/nanny',
+  parent: '/parent',
   admin: '/admin/dashboard',
   super_admin: '/admin/dashboard',
 };
