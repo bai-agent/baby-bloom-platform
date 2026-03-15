@@ -148,6 +148,87 @@ export async function checkPostIntroOutcomes(
 }
 
 // ════════════════════════════════════════════════════════════
+// 1b. LAZY TRIGGER: Auto-advance trials that have passed
+// ════════════════════════════════════════════════════════════
+
+export async function checkPostTrialOutcomes(
+  adminClient: ReturnType<typeof createAdminClient>,
+  filter: { nanny_id?: string; parent_id?: string }
+): Promise<void> {
+  const now = new Date();
+  const todayStr = now.toISOString().split('T')[0]; // YYYY-MM-DD
+
+  // Find confirmed trials (fill_initiated_by IS NULL = both sides confirmed) where trial_date has passed
+  let query = adminClient
+    .from('connection_requests')
+    .select('id, parent_id, nanny_id, trial_date, connection_stage')
+    .eq('connection_stage', CONNECTION_STAGE.TRIAL_ARRANGED)
+    .is('fill_initiated_by', null) // only confirmed trials
+    .not('trial_date', 'is', null)
+    .lt('trial_date', todayStr); // trial_date < today (trial day has fully elapsed)
+
+  if (filter.nanny_id) query = query.eq('nanny_id', filter.nanny_id);
+  if (filter.parent_id) query = query.eq('parent_id', filter.parent_id);
+
+  const { data: stale } = await query;
+
+  for (const req of stale ?? []) {
+    const { error } = await adminClient
+      .from('connection_requests')
+      .update({
+        connection_stage: CONNECTION_STAGE.TRIAL_COMPLETE,
+        updated_at: now.toISOString(),
+      })
+      .eq('id', req.id)
+      .eq('connection_stage', CONNECTION_STAGE.TRIAL_ARRANGED); // optimistic lock
+
+    if (error) {
+      funnelError('checkPostTrial', req.id, 'Failed to advance to TRIAL_COMPLETE', error);
+      continue;
+    }
+
+    funnelLog('checkPostTrial', req.id, '31 → 32 (auto)', { trialDate: req.trial_date });
+
+    // Send followup to nanny: "How did your trial go?"
+    const parties = await getConnectionParties(adminClient, req.parent_id, req.nanny_id);
+
+    if (parties.nannyUserId) {
+      await createInboxMessage({
+        userId: parties.nannyUserId,
+        type: 'post_trial_followup',
+        title: `How did your trial with ${parties.parentName} go?`,
+        body: 'Let us know how it went so we can help with next steps.',
+        actionUrl: '/nanny/positions',
+        referenceId: req.id,
+        referenceType: 'connection_request',
+      });
+
+      if (parties.nannyEmail) {
+        sendEmail({
+          to: parties.nannyEmail,
+          subject: `How did your trial with ${parties.parentName} go?`,
+          html: `<div style="${baseStyle}">
+            <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
+            <p style="color: #374151; font-size: 16px; line-height: 1.6;">We hope your trial shift with ${parties.parentName} went well! When you have a moment, let us know how it went so we can help with next steps.</p>
+            <p style="margin-top: 24px;"><a href="${appUrl}/nanny/positions" style="${btnStyle}">Update in My Positions</a></p>
+          </div>`,
+          emailType: 'post_trial_followup',
+          recipientUserId: parties.nannyUserId,
+        }).catch(err => funnelError('checkPostTrial', req.id, 'POST-TRIAL email failed', err));
+      }
+    }
+
+    await logConnectionEvent({
+      connectionRequestId: req.id,
+      parentId: req.parent_id,
+      nannyId: req.nanny_id,
+      eventType: 'trial_complete',
+      eventData: { auto: true, trial_date: req.trial_date },
+    });
+  }
+}
+
+// ════════════════════════════════════════════════════════════
 // 2. NANNY REPORTS INTRO OUTCOME
 // ════════════════════════════════════════════════════════════
 
@@ -166,7 +247,7 @@ export async function reportIntroOutcome(
   // Fetch connection
   const { data: req, error: fetchErr } = await adminClient
     .from('connection_requests')
-    .select('id, parent_id, nanny_id, position_id, connection_stage, fill_initiated_by')
+    .select('id, parent_id, nanny_id, position_id, connection_stage, fill_initiated_by, confirmed_time')
     .eq('id', requestId)
     .eq('nanny_id', nannyInfo.nannyId)
     .single();
@@ -351,6 +432,14 @@ export async function reportIntroOutcome(
       return { success: false, error: 'Can only arrange trial from Intro Complete or Awaiting Response stage.' };
     }
 
+    // Validate trial date is not before the intro call date
+    if (trialDate && req.confirmed_time) {
+      const introDay = req.confirmed_time.split('T')[0];
+      if (trialDate < introDay) {
+        return { success: false, error: 'Trial date cannot be before the intro call date.' };
+      }
+    }
+
     // Nanny-reported trial: set fill_initiated_by='nanny' so parent must confirm
     const { error: updateErr } = await adminClient
       .from('connection_requests')
@@ -459,7 +548,7 @@ export async function confirmTrialArrangement(
 
   const { data: req, error: fetchErr } = await adminClient
     .from('connection_requests')
-    .select('id, parent_id, nanny_id, connection_stage, fill_initiated_by, trial_date')
+    .select('id, parent_id, nanny_id, connection_stage, fill_initiated_by, trial_date, confirmed_time')
     .eq('id', requestId)
     .eq('parent_id', parentId)
     .single();
@@ -474,6 +563,14 @@ export async function confirmTrialArrangement(
 
   const now = new Date().toISOString();
   const finalDate = trialDate || req.trial_date;
+
+  // Validate trial date is not before the intro call date
+  if (finalDate && req.confirmed_time) {
+    const introDay = req.confirmed_time.split('T')[0];
+    if (finalDate < introDay) {
+      return { success: false, error: 'Trial date cannot be before the intro call date.' };
+    }
+  }
 
   const { error: updateErr } = await adminClient
     .from('connection_requests')
@@ -514,7 +611,7 @@ export async function confirmTrialArrangement(
     eventData: { trial_date: finalDate },
   });
 
-  revalidatePath('/parent/position');
+  revalidatePath('/parent');
   revalidatePath('/parent/connections');
   revalidatePath('/nanny/positions');
   return { success: true, error: null };
@@ -586,7 +683,7 @@ export async function declineTrialArrangement(
     eventType: 'parent_declined_trial',
   });
 
-  revalidatePath('/parent/position');
+  revalidatePath('/parent');
   revalidatePath('/parent/connections');
   revalidatePath('/nanny/positions');
   return { success: true, error: null };
@@ -938,7 +1035,7 @@ export async function confirmPlacement(
       type: 'placement_confirmed',
       title: `${parties.nannyName} is confirmed as your nanny!`,
       body: 'You can view your placement details in My Childcare.',
-      actionUrl: '/parent/position',
+      actionUrl: '/parent',
       referenceId: requestId,
       referenceType: 'connection_request',
     });
@@ -955,7 +1052,7 @@ export async function confirmPlacement(
   funnelLog('confirmPlacement', requestId, 'COMPLETE — placement active (Path A)', { placementId: result.placementId });
 
   revalidatePath('/parent/connections');
-  revalidatePath('/parent/position');
+  revalidatePath('/parent');
   revalidatePath('/nanny/inbox');
   revalidatePath('/nanny/positions');
   return { success: true, error: null };
@@ -1073,7 +1170,7 @@ export async function parentInitiateFill(
     eventData: { from_stage: connection.connection_stage },
   });
 
-  revalidatePath('/parent/position');
+  revalidatePath('/parent');
   revalidatePath('/parent/connections');
   revalidatePath('/nanny/inbox');
   return { success: true, error: null };
@@ -1135,7 +1232,7 @@ export async function nannyConfirmPosition(
       type: 'placement_confirmed',
       title: `${parties.nannyName} is confirmed as your nanny!`,
       body: 'You can view your placement details in My Childcare.',
-      actionUrl: '/parent/position',
+      actionUrl: '/parent',
       referenceId: requestId,
       referenceType: 'connection_request',
     });
@@ -1147,7 +1244,7 @@ export async function nannyConfirmPosition(
         html: `<div style="${baseStyle}">
           <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
           <p style="color: #374151; font-size: 16px; line-height: 1.6;">Wonderful news — ${parties.nannyName} has confirmed your nanny position. You can view your placement details in My Childcare.</p>
-          <p style="margin-top: 24px;"><a href="${appUrl}/parent/position" style="${btnStyle}">View My Childcare</a></p>
+          <p style="margin-top: 24px;"><a href="${appUrl}/parent" style="${btnStyle}">View My Childcare</a></p>
         </div>`,
         emailType: 'placement_confirmed',
         recipientUserId: parties.parentUserId,
@@ -1179,7 +1276,7 @@ export async function nannyConfirmPosition(
   funnelLog('nannyConfirmPosition', requestId, 'COMPLETE — placement active (Path B)', { placementId: result.placementId });
 
   revalidatePath('/parent/connections');
-  revalidatePath('/parent/position');
+  revalidatePath('/parent');
   revalidatePath('/nanny/inbox');
   revalidatePath('/nanny/positions');
   return { success: true, error: null };
@@ -1293,7 +1390,7 @@ export async function endPosition(
       type: 'position_ended',
       title: 'Position has ended',
       body: 'Your nanny position has been marked as ended. You can create a new position when you\'re ready.',
-      actionUrl: '/parent/position',
+      actionUrl: '/parent',
     });
   }
 
@@ -1315,7 +1412,7 @@ export async function endPosition(
     eventData: { reason, position_status: positionStatus, ended_by: isParent ? 'parent' : 'nanny' },
   });
 
-  revalidatePath('/parent/position');
+  revalidatePath('/parent');
   revalidatePath('/parent/connections');
   revalidatePath('/nanny/inbox');
   revalidatePath('/nanny/positions');
@@ -1476,7 +1573,7 @@ export async function updateParentPlacementRate(
     .eq('id', placementId);
 
   if (error) return { success: false, error: error.message };
-  revalidatePath('/parent/position');
+  revalidatePath('/parent');
   return { success: true };
 }
 
@@ -1506,7 +1603,7 @@ export async function updateParentPlacementHours(
     .eq('id', placementId);
 
   if (error) return { success: false, error: error.message };
-  revalidatePath('/parent/position');
+  revalidatePath('/parent');
   return { success: true };
 }
 
@@ -1649,7 +1746,7 @@ export async function removeNannyPlacement(
 
   funnelLog('removeNannyPlacement', placementId, 'COMPLETE — placement ended, position reverted to OPEN');
 
-  revalidatePath('/parent/position');
+  revalidatePath('/parent');
   revalidatePath('/nanny/positions');
   return { success: true, error: null };
 }
@@ -1728,10 +1825,11 @@ export async function getNannyPlacements(): Promise<{
 
   const positionFormDataMap = new Map<string, Record<string, unknown>>();
   const positionDetailsMap = new Map<string, Record<string, unknown>>();
+  const positionSuburbMap = new Map<string, string>();
   if (positionIds.length > 0) {
     const { data: positions } = await adminClient
       .from('nanny_positions')
-      .select('id, details')
+      .select('id, details, suburb')
       .in('id', positionIds);
 
     if (positions) {
@@ -1742,6 +1840,7 @@ export async function getNannyPlacements(): Promise<{
         if (formData) {
           positionFormDataMap.set(pos.id, formData);
         }
+        if (pos.suburb) positionSuburbMap.set(pos.id, pos.suburb);
       }
     }
   }
@@ -1753,7 +1852,7 @@ export async function getNannyPlacements(): Promise<{
       id: p.id,
       parentName: profile ? `${profile.first_name} ${profile.last_name}` : 'Unknown',
       parentLastName: profile?.last_name || '',
-      parentSuburb: profile?.suburb || '',
+      parentSuburb: (p.position_id ? positionSuburbMap.get(p.position_id) : null) || '',
       parentPhoto: profile?.profile_picture_url || null,
       parentDateOfBirth: profile?.date_of_birth || null,
       weeklyHours: p.weekly_hours,
@@ -1951,12 +2050,12 @@ export async function savePositionAsNanny(
       type: 'position_updated',
       title: `${nannyName} has updated the position details`,
       body: 'Your nanny has made changes to the position. Review the updates on your dashboard.',
-      actionUrl: '/parent/position',
+      actionUrl: '/parent',
     });
   }
 
   revalidatePath('/nanny/positions');
-  revalidatePath('/parent/position');
+  revalidatePath('/parent');
   return { success: true, error: null };
 }
 
@@ -2227,14 +2326,14 @@ export async function nannyEndPlacement(
       type: 'placement_ended',
       title: `${nannyName} has ended their placement`,
       body: 'Your nanny is no longer available. Your childcare position remains active so we can help you find a new match.',
-      actionUrl: '/parent/position',
+      actionUrl: '/parent',
     });
   }
 
   funnelLog('nannyEndPlacement', placementId, 'COMPLETE — placement ended, position reverted to OPEN');
 
   revalidatePath('/nanny/positions');
-  revalidatePath('/parent/position');
+  revalidatePath('/parent');
   return { success: true, error: null };
 }
 
@@ -2428,8 +2527,9 @@ export async function getNannyUpcomingIntros(): Promise<{
     return { data: [], error: 'Not authenticated as nanny' };
   }
 
-  // Fire lazy trigger — auto-advance past intros to INTRO_COMPLETE
+  // Fire lazy triggers — auto-advance past intros and trials
   await checkPostIntroOutcomes(adminClient, { nanny_id: nannyInfo.nannyId });
+  await checkPostTrialOutcomes(adminClient, { nanny_id: nannyInfo.nannyId });
 
   const { data: connections } = await adminClient
     .from('connection_requests')
@@ -2446,7 +2546,6 @@ export async function getNannyUpcomingIntros(): Promise<{
       CONNECTION_STAGE.OFFERED,
       CONNECTION_STAGE.CONFIRMED,
       CONNECTION_STAGE.NOT_HIRED,
-      CONNECTION_STAGE.ACTIVE,
     ])
     .order('created_at', { ascending: false });
 
@@ -2477,24 +2576,10 @@ export async function getNannyUpcomingIntros(): Promise<{
   if (positionIds.length > 0) {
     const { data: positions } = await adminClient
       .from('nanny_positions')
-      .select('id, schedule_type, hours_per_week, days_required, level_of_support, hourly_rate, urgency, start_date, placement_length, reason_for_nanny, language_preference, qualification_requirement, certificate_requirements, vaccination_required, drivers_license_required, car_required, comfortable_with_pets_required, non_smoker_required, other_requirements_details, description, parent_id')
+      .select('id, schedule_type, hours_per_week, days_required, level_of_support, hourly_rate, urgency, start_date, placement_length, reason_for_nanny, language_preference, qualification_requirement, certificate_requirements, vaccination_required, drivers_license_required, car_required, comfortable_with_pets_required, non_smoker_required, other_requirements_details, description, parent_id, suburb')
       .in('id', positionIds);
 
     if (positions) {
-      // Get suburbs from parent profiles
-      const posParentIds = positions.map(p => p.parent_id).filter(Boolean);
-      const { data: posParents } = await adminClient
-        .from('parents')
-        .select('id, user_id')
-        .in('id', posParentIds);
-      const posParentUserIds = (posParents || []).map(p => p.user_id);
-      const { data: posProfiles } = await adminClient
-        .from('user_profiles')
-        .select('user_id, suburb')
-        .in('user_id', posParentUserIds);
-      const posProfileMap = new Map((posProfiles || []).map(p => [p.user_id, p]));
-      const posParentMap = new Map((posParents || []).map(p => [p.id, p]));
-
       // Fetch children for all positions
       const { data: allChildren } = await adminClient
         .from('position_children')
@@ -2520,8 +2605,6 @@ export async function getNannyUpcomingIntros(): Promise<{
       );
 
       for (const pos of positions) {
-        const parent = posParentMap.get(pos.parent_id);
-        const prof = parent ? posProfileMap.get(parent.user_id) : null;
         positionMap.set(pos.id, {
           scheduleType: pos.schedule_type,
           hoursPerWeek: pos.hours_per_week,
@@ -2543,7 +2626,7 @@ export async function getNannyUpcomingIntros(): Promise<{
           comfortableWithPetsRequired: pos.comfortable_with_pets_required,
           nonSmokerRequired: pos.non_smoker_required,
           otherRequirements: pos.other_requirements_details,
-          suburb: prof?.suburb || null,
+          suburb: pos.suburb || null,
           description: pos.description,
         });
       }
@@ -2556,7 +2639,7 @@ export async function getNannyUpcomingIntros(): Promise<{
     return {
       connectionId: c.id,
       otherPartyName: profile ? `${profile.last_name} Family` : 'Unknown',
-      otherPartySuburb: profile?.suburb || '',
+      otherPartySuburb: (c.position_id ? positionMap.get(c.position_id)?.suburb : null) || '',
       otherPartyPhoto: profile?.profile_picture_url || null,
       confirmedTime: c.confirmed_time || '',
       connectionStage: c.connection_stage,
@@ -2589,8 +2672,9 @@ export async function getParentUpcomingIntros(): Promise<{
     return { data: [], error: 'Not authenticated as parent' };
   }
 
-  // Fire lazy trigger — auto-advance past intros to INTRO_COMPLETE
+  // Fire lazy triggers — auto-advance past intros and trials
   await checkPostIntroOutcomes(adminClient, { parent_id: parentId });
+  await checkPostTrialOutcomes(adminClient, { parent_id: parentId });
 
   const { data: connections } = await adminClient
     .from('connection_requests')
@@ -2675,7 +2759,7 @@ export async function reportParentOutcome(
 
   const { data: req, error: fetchErr } = await adminClient
     .from('connection_requests')
-    .select('id, parent_id, nanny_id, position_id, connection_stage')
+    .select('id, parent_id, nanny_id, position_id, connection_stage, confirmed_time')
     .eq('id', requestId)
     .eq('parent_id', parentId)
     .single();
@@ -2745,7 +2829,7 @@ export async function reportParentOutcome(
       }
     }
 
-    revalidatePath('/parent/position');
+    revalidatePath('/parent');
     revalidatePath('/nanny/positions');
     return { success: true, error: null };
   }
@@ -2778,12 +2862,20 @@ export async function reportParentOutcome(
       });
     }
 
-    revalidatePath('/parent/position');
+    revalidatePath('/parent');
     revalidatePath('/nanny/positions');
     return { success: true, error: null };
   }
 
   if (outcome === 'trial') {
+    // Validate trial date is not before the intro call date
+    if (dateValue && req.confirmed_time) {
+      const introDay = req.confirmed_time.split('T')[0];
+      if (dateValue < introDay) {
+        return { success: false, error: 'Trial date cannot be before the intro call date.' };
+      }
+    }
+
     // Parent-reported trial: immediately confirmed (parent is the authority)
     const updateData: Record<string, unknown> = {
       connection_stage: CONNECTION_STAGE.TRIAL_ARRANGED,
@@ -2816,7 +2908,7 @@ export async function reportParentOutcome(
       });
     }
 
-    revalidatePath('/parent/position');
+    revalidatePath('/parent');
     revalidatePath('/nanny/positions');
     return { success: true, error: null };
   }
@@ -2835,7 +2927,7 @@ export async function reportParentOutcome(
     }
 
     funnelLog('parent-outcome', requestId, `${req.connection_stage} → 30 (awaiting)`);
-    revalidatePath('/parent/position');
+    revalidatePath('/parent');
     return { success: true, error: null };
   }
 
@@ -2888,7 +2980,7 @@ export async function rejectHiredClaim(
 
   funnelLog('reject-claim', requestId, '33 → 35 (parent rejected nanny hired claim — disconnected)');
 
-  revalidatePath('/parent/position');
+  revalidatePath('/parent');
   revalidatePath('/nanny/positions');
   return { success: true, error: null };
 }
@@ -2952,7 +3044,7 @@ export async function revertToAwaiting(
     });
   }
 
-  revalidatePath('/parent/position');
+  revalidatePath('/parent');
   revalidatePath('/nanny/positions');
   return { success: true, error: null };
 }
@@ -3031,7 +3123,7 @@ export async function closePositionWithReason(
 
   funnelLog('close-position', position.id, `connections ended (${reason}), position closed`, { connectionsClosedCount: activeConns?.length || 0 });
 
-  revalidatePath('/parent/position');
+  revalidatePath('/parent');
   revalidatePath('/nanny/positions');
   return { success: true, error: null };
 }
@@ -3124,7 +3216,7 @@ export async function updateConnectionStartWeek(
 
   funnelLog('update-start-week', requestId, `start_date → ${startDate}`);
 
-  revalidatePath('/parent/position');
+  revalidatePath('/parent');
   revalidatePath('/nanny/positions');
   return { success: true, error: null };
 }

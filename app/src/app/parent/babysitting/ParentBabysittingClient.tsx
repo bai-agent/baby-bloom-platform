@@ -153,7 +153,7 @@ interface ParentBabysittingClientProps {
 
 export function ParentBabysittingClient({ requests, suburbs }: ParentBabysittingClientProps) {
   const router = useRouter();
-  const [view, setView] = useState<"list" | "create">("list");
+  const [view, setView] = useState<"list" | "create">("create");
   const [selectedRequest, setSelectedRequest] = useState<BabysittingRequestWithSlots | null>(null);
   const [showPast, setShowPast] = useState(false);
 
@@ -366,10 +366,6 @@ export function ParentBabysittingClient({ requests, suburbs }: ParentBabysitting
     setSubmitting(false);
 
     if (!result.success) {
-      if (result.error === 'VERIFICATION_REQUIRED') {
-        router.push('/parent/verification');
-        return;
-      }
       setFormError(result.error || "Failed to create request");
       return;
     }
@@ -417,8 +413,7 @@ export function ParentBabysittingClient({ requests, suburbs }: ParentBabysitting
               if (formStep > 1) {
                 goBack();
               } else {
-                resetForm();
-                setView("list");
+                router.push('/parent');
               }
             }}
           >

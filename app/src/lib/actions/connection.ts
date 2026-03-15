@@ -11,7 +11,7 @@ import { sydneyToUTC, BRACKET_KEYS, TIME_BRACKETS, getBracketForHour, formatSydn
 import type { BracketKey } from '@/lib/timezone';
 import { CONNECTION_STAGE, POSITION_STAGE, POSITION_STATUS, HIDDEN_CONNECTION_STAGES } from '@/lib/position/constants';
 import { funnelLog } from '@/lib/position/logger';
-import { checkPostIntroOutcomes } from './position-funnel';
+import { checkPostIntroOutcomes, checkPostTrialOutcomes } from './position-funnel';
 
 // ── Types ──
 
@@ -174,18 +174,6 @@ export async function createConnectionRequest(
     return { success: false, error: 'Not authenticated as parent' };
   }
 
-  // Check parent verification
-  const adminClient = createAdminClient();
-  const { data: parentRecord } = await adminClient
-    .from('parents')
-    .select('verification_level')
-    .eq('id', parentId)
-    .single();
-
-  if (!parentRecord || (parentRecord.verification_level ?? 0) < 1) {
-    return { success: false, error: 'VERIFICATION_REQUIRED' };
-  }
-
   // Check for active/filled position
   const { data: position } = await supabase
     .from('nanny_positions')
@@ -244,6 +232,8 @@ export async function createConnectionRequest(
   }
 
   funnelLog('createConnection', request.id, 'created', { nannyId, parentId, positionId: position?.id });
+
+  const adminClient = createAdminClient();
 
   // Move position from Open → Connecting (if this is the first connection)
   if (position?.id && position.stage === POSITION_STAGE.OPEN) {
@@ -896,9 +886,10 @@ export async function getParentConnectionRequests(): Promise<{ data: ConnectionR
     return { data: [], error: 'Not authenticated as parent' };
   }
 
-  // Lazy expire stale requests + advance completed intros
+  // Lazy expire stale requests + advance completed intros and trials
   await expireStaleRequests(adminClient, { parent_id: parentId });
   await checkPostIntroOutcomes(adminClient, { parent_id: parentId });
+  await checkPostTrialOutcomes(adminClient, { parent_id: parentId });
 
   const { data, error } = await adminClient
     .from('connection_requests')
@@ -963,9 +954,10 @@ export async function getNannyConnectionRequests(): Promise<{ data: ConnectionRe
     return { data: [], error: 'Not authenticated as nanny' };
   }
 
-  // Lazy expire stale requests + advance completed intros
+  // Lazy expire stale requests + advance completed intros and trials
   await expireStaleRequests(adminClient, { nanny_id: nannyInfo.nannyId });
   await checkPostIntroOutcomes(adminClient, { nanny_id: nannyInfo.nannyId });
+  await checkPostTrialOutcomes(adminClient, { nanny_id: nannyInfo.nannyId });
 
   const { data, error } = await adminClient
     .from('connection_requests')

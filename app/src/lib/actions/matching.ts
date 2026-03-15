@@ -12,7 +12,7 @@ import { sendEmail, sendBatchEmails } from '@/lib/email/resend';
 import { getUserEmailInfo } from '@/lib/email/helpers';
 import { BRACKET_KEYS, formatSydneyDate } from '@/lib/timezone';
 import type { BracketKey } from '@/lib/timezone';
-import { CONNECTION_STAGE, POSITION_STAGE, POSITION_STATUS } from '@/lib/position/constants';
+import { CONNECTION_STAGE, HIDDEN_CONNECTION_STAGES, POSITION_STAGE, POSITION_STATUS } from '@/lib/position/constants';
 import { funnelLog } from '@/lib/position/logger';
 import type { MatchResult } from '@/lib/matching/types';
 
@@ -471,7 +471,7 @@ export async function triggerDfyMatchmaking(): Promise<{ success: boolean; error
   }
 
   revalidatePath('/parent/matches');
-  revalidatePath('/parent/position');
+  revalidatePath('/parent');
   return { success: true, error: null, notifiedCount: sent };
 }
 
@@ -773,7 +773,7 @@ export async function respondToDfyMatch(
       type: 'dfy_nanny_interested',
       title: `${nannyName} is interested and available for an intro!`,
       body: `${nannyName} has shared their availability. Pick a time for a 15-minute intro call.`,
-      actionUrl: '/parent/position',
+      actionUrl: '/parent',
       referenceId: connection.id,
       referenceType: 'connection_request',
     });
@@ -787,7 +787,7 @@ export async function respondToDfyMatch(
           <h1 style="color: #8B5CF6; font-size: 24px; margin-bottom: 16px;">Baby Bloom Sydney</h1>
           <p style="color: #374151; font-size: 16px; line-height: 1.6;">${nannyName} has expressed interest in your nanny position and shared their availability for an intro call.</p>
           <p style="color: #374151; font-size: 14px;">Pick a time that works for you to schedule a 15-minute intro.</p>
-          <p style="margin-top: 24px;"><a href="${APP_URL}/parent/position" style="${BTN_STYLE}">Pick a Time</a></p>
+          <p style="margin-top: 24px;"><a href="${APP_URL}/parent" style="${BTN_STYLE}">Pick a Time</a></p>
         </div>`,
         emailType: 'dfy_parent_applicant',
         recipientUserId: parentData.user_id,
@@ -796,7 +796,7 @@ export async function respondToDfyMatch(
   }
 
   revalidatePath('/nanny/positions');
-  revalidatePath('/parent/position');
+  revalidatePath('/parent');
   return { success: true, error: null, connectionId: connection.id };
 }
 
@@ -862,7 +862,7 @@ export async function getDfyConnections(
     .select('id, nanny_id, connection_stage, proposed_times, confirmed_time, position_id')
     .eq('position_id', positionId)
     .eq('source', 'dfy')
-    .not('connection_stage', 'in', `(${CONNECTION_STAGE.NOT_HIRED},${CONNECTION_STAGE.NOT_SELECTED},${CONNECTION_STAGE.CANCELLED_BY_PARENT},${CONNECTION_STAGE.CANCELLED_BY_NANNY})`)
+    .not('connection_stage', 'in', `(${[...HIDDEN_CONNECTION_STAGES, CONNECTION_STAGE.ACTIVE].join(',')})`)
     .order('created_at', { ascending: false });
 
   if (error) {
@@ -1009,7 +1009,7 @@ export async function declineDfyConnection(
     eventData: { source: 'dfy' },
   });
 
-  revalidatePath('/parent/position');
+  revalidatePath('/parent');
   return { success: true, error: null };
 }
 
@@ -1373,7 +1373,7 @@ export async function getDfyStatus(): Promise<{
     .select('id', { count: 'exact', head: true })
     .eq('position_id', position.id)
     .eq('source', 'dfy')
-    .not('connection_stage', 'in', `(${CONNECTION_STAGE.NOT_HIRED},${CONNECTION_STAGE.NOT_SELECTED},${CONNECTION_STAGE.CANCELLED_BY_PARENT},${CONNECTION_STAGE.CANCELLED_BY_NANNY})`);
+    .not('connection_stage', 'in', `(${[...HIDDEN_CONNECTION_STAGES, CONNECTION_STAGE.ACTIVE].join(',')})`);
 
   return {
     activated: true,

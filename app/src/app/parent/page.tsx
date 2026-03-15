@@ -1,57 +1,83 @@
-import { redirect } from 'next/navigation';
-import { createClient } from '@/lib/supabase/server';
-import { createAdminClient } from '@/lib/supabase/admin';
-import { ParentHubClient } from '@/components/hub/ParentHubClient';
+import { Card, CardContent } from "@/components/ui/card";
+import { AlertCircle } from "lucide-react";
+import { getPosition, getParentId, PositionWithChildren } from "@/lib/actions/parent";
+import { getParentPlacement, getConfirmedConnections, getParentUpcomingIntros } from "@/lib/actions/position-funnel";
+import { getDfyStatus } from "@/lib/actions/matching";
+import { getParentBabysittingRequests } from "@/lib/actions/babysitting";
+import { POSITION_STAGE } from "@/lib/position/constants";
+import { createAdminClient } from "@/lib/supabase/admin";
+import { ParentHubClient } from "./ParentHubClient";
+
+const isDevMode = process.env.NEXT_PUBLIC_DEV_MODE === 'true';
 
 export default async function ParentHubPage() {
-  const supabase = createClient();
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
-  if (authError || !user) redirect('/login');
+  let position: PositionWithChildren | null = null;
+  let error: string | null = null;
 
-  const admin = createAdminClient();
+  if (!isDevMode) {
+    const result = await getPosition();
+    position = result.data ?? null;
+    error = result.error ?? null;
+  }
 
-  // First: get profile + parent record
-  const [profileRes, parentRes] = await Promise.all([
-    admin.from('user_profiles').select('first_name, last_name, profile_picture_url').eq('user_id', user.id).single(),
-    admin.from('parents').select('id').eq('user_id', user.id).single(),
+  // Fetch verification level
+  const parentId = await getParentId();
+  const verificationPromise = parentId
+    ? createAdminClient()
+        .from('parents')
+        .select('verification_level')
+        .eq('id', parentId)
+        .single()
+        .then(({ data }) => (data?.verification_level ?? 0) >= 1)
+    : Promise.resolve(false);
+
+  const [placementResult, connectionsResult, introsResult, dfyStatusResult, bsrResult, parentVerified] = await Promise.all([
+    getParentPlacement(),
+    position?.id ? getConfirmedConnections(position.id) : Promise.resolve({ data: [], error: null }),
+    getParentUpcomingIntros(),
+    getDfyStatus(),
+    getParentBabysittingRequests(),
+    verificationPromise,
   ]);
 
-  const parentId = parentRes.data?.id;
+  const placement = placementResult.data;
+  const confirmedNannies = connectionsResult.data;
+  const upcomingIntros = introsResult.data;
+  const dfyTier = dfyStatusResult.tier;
+  const dfyExpiresAt = dfyStatusResult.expiresAt;
+  const dfyActivated = dfyStatusResult.activated;
+  const babysittingRequests = bsrResult.data ?? [];
+  const showFillButton = position && !placement &&
+    (position as PositionWithChildren & { stage?: number }).stage === POSITION_STAGE.CONNECTING &&
+    confirmedNannies.length > 0;
 
-  let verificationStatus = 0;
-  let positionId: string | null = null;
-  let connectionsCount = 0;
-  let bsrCount = 0;
-
-  if (parentId) {
-    // Fetch verification, position, connections, BSR counts in parallel
-    const [verifRes, positionRes] = await Promise.all([
-      admin.from('parent_verifications').select('verification_status').eq('parent_id', parentId).maybeSingle(),
-      admin.from('nanny_positions').select('id, status').eq('parent_id', parentId).order('created_at', { ascending: false }).limit(1).maybeSingle(),
-    ]);
-
-    verificationStatus = verifRes.data?.verification_status ?? 0;
-    positionId = positionRes.data?.id || null;
-
-    // Fetch counts that depend on position
-    const [connRes, bsrRes] = await Promise.all([
-      positionId
-        ? admin.from('connection_requests').select('id', { count: 'exact', head: true }).eq('position_id', positionId).in('status', ['pending', 'accepted', 'confirmed'])
-        : Promise.resolve({ count: 0 }),
-      admin.from('babysitting_requests').select('id', { count: 'exact', head: true }).eq('parent_id', parentId).in('status', ['open', 'filled']),
-    ]);
-
-    connectionsCount = connRes.count || 0;
-    bsrCount = bsrRes.count || 0;
+  if (error) {
+    return (
+      <div className="space-y-6">
+        <Card>
+          <CardContent className="flex items-center gap-3 py-6">
+            <AlertCircle className="h-5 w-5 text-red-500" />
+            <p className="text-red-600">{error}</p>
+          </CardContent>
+        </Card>
+      </div>
+    );
   }
 
   return (
-    <ParentHubClient
-      firstName={profileRes.data?.first_name || 'there'}
-      isVerified={verificationStatus >= 20}
-      hasPosition={!!positionId}
-      connectionsCount={connectionsCount}
-      bsrCount={bsrCount}
-    />
+    <div className="mx-auto max-w-2xl space-y-3">
+      <ParentHubClient
+        position={position}
+        placement={placement}
+        confirmedNannies={confirmedNannies}
+        showFillButton={!!showFillButton}
+        upcomingIntros={upcomingIntros}
+        dfyTier={dfyTier}
+        dfyExpiresAt={dfyExpiresAt}
+        dfyActivated={dfyActivated}
+        babysittingRequests={babysittingRequests}
+        parentVerified={parentVerified}
+      />
+    </div>
   );
 }

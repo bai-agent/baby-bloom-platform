@@ -9,6 +9,7 @@ import { ExpandableBadges, type TraitBadge } from "./ExpandableBadges";
 interface NannyCardBKProps {
   nanny: NannyCardData;
   age?: number | null;
+  linkBase?: string;
 }
 
 function buildBadges(nanny: NannyCardData): TraitBadge[] {
@@ -26,13 +27,13 @@ function buildBadges(nanny: NannyCardData): TraitBadge[] {
   return badges;
 }
 
-export function NannyCardBK({ nanny, age }: NannyCardBKProps) {
+export function NannyCardBK({ nanny, age, linkBase = "/nannies" }: NannyCardBKProps) {
   const initials = `${nanny.first_name[0]}${nanny.last_name[0]}`;
   const isVerified =
     nanny.verification_tier === "tier2" || nanny.verification_tier === "tier3";
 
   return (
-    <Link href={`/nannies/${nanny.id}`} className="block group">
+    <Link href={`${linkBase}/${nanny.id}`} className="block group">
       <Card className="overflow-hidden transition-all hover:shadow-lg hover:border-violet-200">
         <div className="p-5">
           <div className="flex items-start gap-4">

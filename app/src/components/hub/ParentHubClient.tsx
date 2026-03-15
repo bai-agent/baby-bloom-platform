@@ -1,7 +1,10 @@
 'use client';
 
 import { useEffect } from 'react';
-import { ClipboardList, Filter, Users, Baby } from 'lucide-react';
+import { Baby } from 'lucide-react';
+import { PositionTile, PositionSummary } from '@/components/hub/PositionTile';
+import { MatchesTile } from '@/components/hub/MatchesTile';
+import { ConnectionsTile, ConnectedNanny } from '@/components/hub/ConnectionsTile';
 import { HubTile } from '@/components/hub/HubTile';
 import { VerificationBanner } from '@/components/hub/VerificationBanner';
 import { trackEvent } from '@/lib/analytics/trackEvent';
@@ -10,7 +13,11 @@ interface ParentHubClientProps {
   firstName: string;
   isVerified: boolean;
   hasPosition: boolean;
+  positionSummary: PositionSummary | null;
+  hasDfy: boolean;
   connectionsCount: number;
+  connectedNannies: ConnectedNanny[];
+  placement: ConnectedNanny | null;
   bsrCount: number;
 }
 
@@ -18,7 +25,11 @@ export function ParentHubClient({
   firstName,
   isVerified,
   hasPosition,
+  positionSummary,
+  hasDfy,
   connectionsCount,
+  connectedNannies,
+  placement,
   bsrCount,
 }: ParentHubClientProps) {
   useEffect(() => {
@@ -42,60 +53,25 @@ export function ParentHubClient({
       )}
 
       {/* Tiles Grid */}
-      <div className="grid gap-6 md:grid-cols-2">
+      <div className="grid gap-4 sm:gap-6 grid-cols-1 sm:grid-cols-2">
         {/* Position Tile */}
-        <HubTile
-          title={hasPosition ? 'My Position' : 'Find Your Perfect Nanny'}
-          icon={<ClipboardList className="h-5 w-5" />}
-          status={hasPosition ? 'active' : 'empty'}
-          emptyMessage="Tell us about your family's needs and we'll match you with the perfect nanny."
-          preview={
-            <p className="text-sm text-slate-600">
-              Your position is live and visible to nannies
-            </p>
-          }
-          primaryCTA={
-            hasPosition
-              ? { label: 'View Position', href: '/parent/position', trackingEvent: 'position_tile_clicked' }
-              : { label: 'Get Started', href: '/parent/request', trackingEvent: 'position_tile_empty_cta_clicked' }
-          }
+        <PositionTile
+          hasPosition={hasPosition}
+          positionSummary={positionSummary}
+          hasDfy={hasDfy}
         />
 
         {/* Matchmaking Tile */}
-        <HubTile
-          title={hasPosition ? 'Your Matches' : 'Matchmaking'}
-          icon={<Filter className="h-5 w-5" />}
-          status={hasPosition ? 'active' : 'locked'}
-          lockedMessage="Create a position first to get matched with qualified nannies."
-          preview={
-            <p className="text-sm text-slate-600">
-              View your matched nannies and shortlist favorites
-            </p>
-          }
-          primaryCTA={
-            hasPosition
-              ? { label: 'View Matches', href: '/parent/matches', trackingEvent: 'matchmaking_tile_clicked' }
-              : { label: 'Create Position', href: '/parent/request', trackingEvent: 'matchmaking_tile_locked_cta_clicked' }
-          }
+        <MatchesTile
+          hasPosition={hasPosition}
+          hasDfy={hasDfy}
         />
 
         {/* Connections Tile */}
-        <HubTile
-          title="Connections"
-          icon={<Users className="h-5 w-5" />}
-          status={connectionsCount > 0 ? 'active' : 'empty'}
-          emptyMessage="Once you connect with nannies, your conversations will appear here."
-          preview={
-            <p className="text-sm text-slate-600">
-              <span className="text-2xl font-bold text-violet-600">{connectionsCount}</span>{' '}
-              active connection{connectionsCount !== 1 ? 's' : ''}
-            </p>
-          }
-          primaryCTA={
-            connectionsCount > 0
-              ? { label: 'View Connections', href: '/parent/position', trackingEvent: 'connections_tile_clicked' }
-              : { label: 'Browse Nannies', href: '/parent/browse', trackingEvent: 'connections_tile_empty_cta_clicked' }
-          }
+        <ConnectionsTile
+          connectionsCount={connectionsCount}
+          connectedNannies={connectedNannies}
+          placement={placement}
         />
 
         {/* Babysitting Tile */}
@@ -116,6 +92,7 @@ export function ParentHubClient({
             )
           }
           primaryCTA={{ label: 'Find a Babysitter', href: '/parent/babysitting', trackingEvent: 'babysitting_tile_clicked' }}
+          className="rounded-2xl hover:shadow-lg hover:border-violet-200 transition-all"
         />
       </div>
     </div>
