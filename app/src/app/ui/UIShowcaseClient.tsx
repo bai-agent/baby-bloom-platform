@@ -140,7 +140,7 @@ import { InterviewRequestModal } from "@/components/InterviewRequestModal";
 import { ConnectModal } from "@/components/ConnectModal";
 
 // ── Page Clients ──
-import { ParentBrowseClient } from "@/app/parent/browse/ParentBrowseClient";
+
 import { MatchResultsClient } from "@/app/parent/matches/MatchResultsClient";
 import { NannyRegistrationFunnel } from "@/app/nanny/register/NannyRegistrationFunnel";
 import { NannyInterviewsClient } from "@/app/nanny/interviews/NannyInterviewsClient";
@@ -1072,10 +1072,6 @@ export function UIShowcaseClient({
             </ClientOnly>
           </PageClientShowcase>
 
-          {/* CMP-056 ParentBrowseClient */}
-          <PageClientShowcase code="CMP-056" name="ParentBrowseClient" slug="parent-browse">
-            <ParentBrowseClient nannies={[nannyCard, nannyCard2, nannyCard3]} />
-          </PageClientShowcase>
 
           {/* CMP-057 ParentInterviewsClient */}
           <PageClientShowcase code="CMP-057" name="ParentInterviewsClient" slug="parent-interviews">

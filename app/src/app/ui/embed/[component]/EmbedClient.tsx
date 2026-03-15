@@ -43,7 +43,7 @@ import { NannyInboxClient } from "@/app/nanny/inbox/NannyInboxClient";
 import { VerificationPageClient } from "@/app/nanny/verification/VerificationPageClient";
 import { NannyShareClient } from "@/app/nanny/share/NannyShareClient";
 import { NannyPositionsClient } from "@/app/nanny/positions/NannyPositionsClient";
-import { ParentBrowseClient } from "@/app/parent/browse/ParentBrowseClient";
+
 import { ParentInterviewsClient } from "@/app/parent/interviews/ParentInterviewsClient";
 import { ParentInboxClient } from "@/app/parent/inbox/ParentInboxClient";
 import { PositionPageClient } from "@/app/parent/position/PositionPageClient";
@@ -114,10 +114,7 @@ const COMPONENTS: Record<string, { name: string; render: () => React.ReactNode }
       </ClientOnly>
     ),
   },
-  "parent-browse": {
-    name: "ParentBrowseClient",
-    render: () => <ParentBrowseClient nannies={[FALLBACK_NANNY, FALLBACK_NANNY_2, FALLBACK_NANNY_3]} />,
-  },
+
   "parent-interviews": {
     name: "ParentInterviewsClient",
     render: () => <ParentInterviewsClient requests={MOCK_INTERVIEW_REQUESTS} />,
